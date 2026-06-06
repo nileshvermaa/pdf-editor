@@ -24,7 +24,6 @@ interface SelectedBlock {
 }
 
 interface PDFCanvasProps {
-  sessionId: string;
   page: PDFPage;
   pdfUrl: string;
   onSelectBlock: (block: SelectedBlock) => void;
@@ -32,7 +31,6 @@ interface PDFCanvasProps {
 }
 
 export const PDFCanvas: React.FC<PDFCanvasProps> = ({
-  sessionId,
   page,
   pdfUrl,
   onSelectBlock,
@@ -40,7 +38,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(1.25); // Scale of PDF page
+  const [scale] = useState(1.25); // Scale of PDF page
   const [rendering, setRendering] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -123,7 +121,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       const canvasWidth = canvas.width;
       const canvasHeight = canvas.height;
 
-      data.paragraphs.forEach((p, idx) => {
+      data.paragraphs.forEach((p) => {
         const { x0, y0, x1, y1 } = p.bbox;
         
         // Translate back from render canvas coordinate bounds to PDF points bounds

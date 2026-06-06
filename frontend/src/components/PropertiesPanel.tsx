@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Type, Sparkles, RefreshCw, Layers } from 'lucide-react';
+import { Type, Sparkles, RefreshCw } from 'lucide-react';
 
 interface SelectedBlock {
   pageNumber: number;

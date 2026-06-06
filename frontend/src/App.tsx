@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, FileText, Download, AlertCircle, RefreshCcw, Sparkles } from 'lucide-react';
+import { UploadCloud, FileText, Download, AlertCircle, Sparkles } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { PDFCanvas } from './components/PDFCanvas';
 import { PropertiesPanel } from './components/PropertiesPanel';
@@ -312,7 +312,6 @@ function App() {
             )}
 
             <PDFCanvas
-              sessionId={session.session_id}
               page={session.pages[activePage - 1]}
               pdfUrl={`${API_BASE}/download/${session.session_id}`}
               onSelectBlock={setSelectedBlock}
