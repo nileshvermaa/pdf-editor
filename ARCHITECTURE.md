@@ -161,3 +161,34 @@ For heavy OCR and multi-page flattening:
 
 ### 5. Font Extraction
 *   For custom embedded fonts, write a backend utility to extract embedded font streams (using PyMuPDF `doc.extract_font()`) and serve them dynamically as base64 CSS font resources to the browser client.
+
+---
+
+## 7. Vercel Multi-Service Deployment
+
+To deploy both frontend (Vite React) and backend (FastAPI) together as separate services on Vercel:
+
+1.  **Vercel Configuration**:
+    Create a `vercel.json` file in the root workspace folder:
+    ```json
+    {
+        "experimentalServices": {
+            "frontend": {
+                "root": "frontend",
+                "routePrefix": "/",
+                "framework": "vite"
+            },
+            "backend": {
+                "root": "backend",
+                "routePrefix": "/_/backend"
+            }
+        }
+    }
+    ```
+2.  **API Routing Alignment**:
+    *   The frontend environment variable `VITE_API_BASE` is utilized to direct HTTP requests dynamically.
+    *   For local dev server proxying, `VITE_API_BASE` defaults to `/api`.
+    *   During Vercel production builds, specify the environment parameter:
+        `VITE_API_BASE=/_/backend/api`
+    *   This forces client calls (e.g. upload, edit, download) to point to `/_/backend/api/...` which Vercel routes automatically to the FastAPI backend service `/api/...` context.
+

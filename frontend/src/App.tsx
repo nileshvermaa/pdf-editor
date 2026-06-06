@@ -33,6 +33,8 @@ interface SelectedBlock {
   color: string;
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [activePage, setActivePage] = useState<number>(1);
@@ -51,7 +53,7 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('/api/upload', {
+      const response = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -86,7 +88,7 @@ function App() {
     setError(null);
 
     try {
-      const response = await fetch(`/api/edit-block/${session.session_id}`, {
+      const response = await fetch(`${API_BASE}/edit-block/${session.session_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -123,7 +125,7 @@ function App() {
     setError(null);
 
     try {
-      const response = await fetch(`/api/replace/${session.session_id}`, {
+      const response = await fetch(`${API_BASE}/replace/${session.session_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -159,7 +161,7 @@ function App() {
     setError(null);
 
     try {
-      const response = await fetch(`/api/command/${session.session_id}`, {
+      const response = await fetch(`${API_BASE}/command/${session.session_id}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: commandStr }),
@@ -184,7 +186,7 @@ function App() {
   // Export and download PDF
   const handleExportPDF = () => {
     if (!session) return;
-    window.open(`/api/download/${session.session_id}`, '_blank');
+    window.open(`${API_BASE}/download/${session.session_id}`, '_blank');
   };
 
   // Local OCR completion callback
@@ -312,7 +314,7 @@ function App() {
             <PDFCanvas
               sessionId={session.session_id}
               page={session.pages[activePage - 1]}
-              pdfUrl={`/api/download/${session.session_id}`}
+              pdfUrl={`${API_BASE}/download/${session.session_id}`}
               onSelectBlock={setSelectedBlock}
               onOCRComplete={handleOCRComplete}
             />

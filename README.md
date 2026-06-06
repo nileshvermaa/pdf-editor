@@ -43,3 +43,16 @@ The script will automatically:
 5. Open your browser to `http://localhost:5173` and begin editing!
 
 Press `Ctrl + C` in the console to cleanly shut down both servers.
+
+---
+
+## Deployment
+
+### Vercel Multi-Service
+This repository supports deploying the frontend and backend together on Vercel using `vercel.json` experimental multi-services.
+
+1.  Deploy the root directory to Vercel.
+2.  Set the following environment variable on Vercel for the frontend service to align endpoints:
+    *   `VITE_API_BASE=/_/backend/api`
+3.  Vercel will build and route client requests automatically.
+
