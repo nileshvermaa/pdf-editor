@@ -224,17 +224,17 @@ docker-compose up --build
 Two independent services. Render is long-lived, so the session/version model
 (undo/redo, durable history) works as designed — no serverless caveat applies.
 
-**Backend → Render** (`render.yaml` blueprint, or a manual Docker web service):
-- Root dir `backend/`, runtime Docker. The Dockerfile binds `0.0.0.0:$PORT`
-  (`CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]`) —
-  Render injects `$PORT`, so do **not** hard-code 8000 in the CMD.
+**Backend → Render** (`render.yaml` blueprint, or manual):
+- Uses Render's **native Python runtime** (not Docker) — avoids Dockerfile path
+  ambiguity in monorepos. `rootDir: backend`, start command:
+  `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+- Python version pinned via `backend/runtime.txt` (`python-3.11.0`).
 - Health check: `/api/health`.
 - Set `AEROPDF_ALLOWED_ORIGINS` to the Vercel frontend URL(s), comma-separated,
   no trailing slash. This is the CORS allowlist read in `config.py` /
   consumed by the `CORSMiddleware` in `main.py`.
-- `render.yaml` mounts a 1 GB disk at `/var/data` and points
-  `AEROPDF_TEMP_DIR=/var/data/aeropdf_sessions` so history survives restarts.
-  (Free plan has no disk → drop the `disk:` block; history is then ephemeral.)
+- Free plan: no persistent disk — history is ephemeral. To persist, upgrade to a
+  paid instance and add the `disk:` block commented out in `render.yaml`.
 
 **Frontend → Vercel** (`vercel.json` — plain Vite SPA, no multi-service):
 - `vercel.json` builds `frontend/` (`cd frontend && npm install && npm run build`,
@@ -255,3 +255,4 @@ Two independent services. Render is long-lived, so the session/version model
 | `AEROPDF_SESSION_TTL_HOURS` | `24` | Idle-session purge age |
 | `AEROPDF_MAX_HISTORY_VERSIONS` | `50` | Undo/redo depth |
 | `AEROPDF_JSON_LOGS` | `false` | Emit JSON logs |
+                                              

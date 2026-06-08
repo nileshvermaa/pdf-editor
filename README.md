@@ -52,10 +52,11 @@ between requests (unlike serverless). Deploy the two services in this order.
 
 1. Push this repo to GitHub.
 2. On [render.com](https://render.com): **New → Blueprint**, select this repo. Render
-   reads [`render.yaml`](./render.yaml) and provisions the Dockerized backend
+   reads [`render.yaml`](./render.yaml) and provisions a native Python web service
    (rooted at `backend/`, health check at `/api/health`).
    - Or do it manually: **New → Web Service**, Root Directory `backend`, runtime
-     Docker. Render injects `$PORT`; the Dockerfile already binds to it.
+     **Python**, build command `pip install -r requirements.txt`, start command
+     `uvicorn main:app --host 0.0.0.0 --port $PORT`.
 3. Note the service's public URL, e.g. `https://aeropdf-backend.onrender.com`.
 4. Set the CORS env var on the backend service (you'll fill the real value after
    step 2 once you know the Vercel URL):
@@ -100,7 +101,7 @@ docker-compose up --build
 pdf-editor/
 ├── run.py                  # Dev orchestrator
 ├── vercel.json             # Vercel frontend (Vite SPA) build config
-├── render.yaml             # Render backend (Docker) blueprint
+├── render.yaml             # Render backend (Python) blueprint
 ├── docker-compose.yml
 ├── CLAUDE.md               # AI codebase guide (architecture, gotchas, patterns)
 ├── ARCHITECTURE.md         # Deep-dive: coordinate math, API schemas, OCR pipeline
@@ -133,4 +134,4 @@ For an AI-readable codebase guide (patterns, gotchas, state flow) see [`CLAUDE.m
 
 ## Contributing
 
-PRs welcome. Run `tsc --noEmit` in `frontend/` before committing to catch type errors.
+PRs welcome. Run `tsc 
