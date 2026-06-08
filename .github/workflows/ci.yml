@@ -1,54 +1,65 @@
-name: AeroPDF CI Pipeline
+name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  backend-ci:
-    name: Backend CI Checks
+  backend:
+    name: Backend tests
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: 'pip'
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
 
-      - name: Install Python Dependencies
+      - name: Install backend dependencies
+        working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
-          pip install flake8 pytest
+          python -m pip install -r requirements.txt
 
-      - name: Lint Python Code with Flake8
-        run: |
-          # stop the build if there are Python syntax errors or undefined names
-          flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Run backend tests
+        working-directory: backend
+        run: python -m pytest
 
-  frontend-ci:
-    name: Frontend CI Checks
+  frontend:
+    name: Frontend build
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Node Dependencies
+      - name: Install frontend dependencies
+        working-directory: frontend
         run: npm ci
-        cwd: frontend
 
-      - name: Compile and Build Frontend
+      - name: Build frontend
+        working-directory: frontend
         run: npm run build
-        cwd: frontend

@@ -1,196 +1,346 @@
-# AeroPDF Architecture & Production Refactoring Guide
+# AeroPDF Architecture
 
-This document contains full specifications of the AeroPDF editor system design, data schemas, API routes, coordinate-mapping math, and a blueprint for a downstream developer/AI to scale this code to a highly resilient production-grade enterprise platform.
+This document describes how AeroPDF is structured today: its editing model, session/version storage, coordinate system, API shape, and the constraints that matter when extending the app.
 
----
+## System Overview
 
-## 1. System Topology & Flow
+AeroPDF has two runtime services.
 
-AeroPDF utilizes a decoupled system design:
-*   **Vite + React (Frontend Client)**: Manages rendering logic, UI element coordinate layouts, and runs client-side OCR using WebAssembly to minimize host requirements.
-*   **FastAPI + PyMuPDF (Backend Core)**: Handles intensive PDF byte-stream manipulations, text redactions, and fonts mapping.
+| Service | Responsibility |
+| --- | --- |
+| React/Vite frontend | Upload UI, PDF rendering with PDF.js, text/shape selection overlays, client-side OCR, user controls |
+| FastAPI backend | PDF parsing, validated PDF mutation, session/version storage, undo/redo, downloads |
 
+High-level flow:
+
+```text
+PDF upload
+  -> POST /api/upload
+  -> SessionManager creates session and version 0000.pdf
+  -> PyMuPDF extracts page geometry, text spans, images, metadata
+  -> frontend renders PDF canvas and overlays editable regions
+
+Editor mutation
+  -> frontend calls a mutating API endpoint
+  -> router validates request with Pydantic
+  -> SessionManager opens current PDF version under a per-session lock
+  -> pdf_engine mutates the open fitz.Document
+  -> SessionManager saves a new version snapshot
+  -> backend returns fresh page tree + history state
+  -> frontend re-renders canvas using docVersion cache busting
 ```
-+---------------------------------------------------------------------------------+
-|                                 CLIENT VIEWPORT                                 |
-|                                                                                 |
-|  [ File Dropzone ] ---> [ PDF.js Renderer ] ---> [ absolute coordinates overlays ]|
-|                                |                              ^                 |
-|                             Upload                         Inspect              |
-|                                v                              |                 |
-+---------------------------------------------------------------+-----------------+
-                                 |                              |
-                             HTTP POST                       HTTP GET
-                                 v                              |
-+---------------------------------------------------------------+-----------------+
-|                             FASTAPI CORE BACKEND                                |
-|                                                                                 |
-|        [ /api/upload ] ---> [ PyMuPDF Layout Parsing ] ---> JSON coordinate map |
-|        [ /api/edit-block ] -> [ Redaction Annotation ] ---> [ TextBox Reflow ]   |
-+---------------------------------------------------------------------------------+
+
+## Backend Modules
+
+| File | Role |
+| --- | --- |
+| `main.py` | FastAPI app assembly, middleware, health route, lifespan purge loop |
+| `config.py` | `AEROPDF_` environment settings |
+| `schemas.py` | Pydantic request and response contracts |
+| `sessions.py` | Session lifecycle, version snapshots, undo/redo, locks, manifest persistence |
+| `pdf_engine.py` | Stateless PDF extraction and mutation functions |
+| `commands.py` | Small command parser for the header command bar |
+| `deps.py` | Shared `SessionManager`, session lookup, `EditResponse` builder |
+| `routers/documents.py` | Upload, download, delete session |
+| `routers/editing.py` | Replace, block edit, persisted OCR, commands, undo/redo |
+| `routers/pages.py` | Rotate, delete, reorder, duplicate, insert blank |
+| `routers/annotations.py` | Image insertion, shapes, highlights |
+
+The important boundary is intentional: routers validate and coordinate work; `SessionManager` owns open/save/versioning; `pdf_engine.py` mutates an already-open `fitz.Document`.
+
+## Frontend Modules
+
+| File | Role |
+| --- | --- |
+| `src/App.tsx` | Top-level document state, active tool state, history, toasts, mutation handlers |
+| `src/api.ts` | Typed API client and `VITE_API_BASE` resolution |
+| `src/components/PDFCanvas.tsx` | PDF.js rendering, text overlays, OCR, shape drawing gestures |
+| `src/components/Sidebar.tsx` | Page list and thumbnails |
+| `src/components/PropertiesPanel.tsx` | Text editing, find/replace, insert/draw entry points |
+| `src/components/PageToolbar.tsx` | Page-level commands |
+| `src/components/ShapeToolbar.tsx` | Active shape, stroke, fill, line width controls |
+| `src/components/ImageInsertModal.tsx` | Image file and placement form |
+| `src/components/CommandConsole.tsx` | Command bar input |
+
+PDF.js worker code is bundled from `pdfjs-dist`; it is not loaded from a CDN.
+
+## Coordinate Model
+
+PyMuPDF and the browser overlay both use a top-left origin for the extracted text geometry. The app therefore does not flip Y coordinates.
+
+Current render scale:
+
+```ts
+const SCALE = 1.25;
 ```
 
----
+Overlay conversion:
 
-## 2. Coordinate Mapping & Visual Overlay Alignment
+```text
+css_left   = pdf_x0 * SCALE
+css_top    = pdf_y0 * SCALE
+css_width  = (pdf_x1 - pdf_x0) * SCALE
+css_height = (pdf_y1 - pdf_y0) * SCALE
+font_size  = span_size * SCALE
+```
 
-### The Mapping Problem
-PDF coordinate points are written using absolute positions. PyMuPDF extracts text coordinates with the origin `(0,0)` at the **top-left corner**, matching standard browser canvas models.
-However, because the PDF.js viewport rendering is scalable, overlay boxes must scale dynamically in CSS.
+Shape drawing conversion:
 
-### Coordinate Mapping Formula
-Let:
-*   $W_{pdf}$ = Original width of the PDF page.
-*   $H_{pdf}$ = Original height of the PDF page.
-*   $W_{canvas}$ = Rendered canvas width in the browser.
-*   $S$ = Scale factor calculated as:
-    $$S = \frac{W_{canvas}}{W_{pdf}}$$
-*   $x_0, y_0, x_1, y_1$ = Raw bounding box coordinates extracted from PyMuPDF.
+```text
+pdf_x = pointer_x / SCALE
+pdf_y = pointer_y / SCALE
+```
 
-The CSS styling properties for absolute overlay `div` boxes are computed as:
-*   `left` = $x_0 \times S$ px
-*   `top` = $y_0 \times S$ px
-*   `width` = $(x_1 - x_0) \times S$ px
-*   `height` = $(y_1 - y_0) \times S$ px
-*   `fontSize` = $size_{original} \times S$ px
+OCR conversion:
 
----
+```text
+pdf_x = (ocr_pixel_x / canvas_width) * page_width
+pdf_y = (ocr_pixel_y / canvas_height) * page_height
+```
 
-## 3. Text Reflow Mechanics (Scenario A)
+Any future zoom work should replace the fixed `SCALE` with a single zoom state shared by canvas rendering, overlays, drawing, and OCR conversion.
 
-PDF streams do not wrap text dynamically. If text length changes, downstream text does not shift naturally. 
+## Session and Versioning Model
 
-To solve this:
-1.  **Block Extraction**: The backend uses PyMuPDF's block-detection structures to group lines into cohesive paragraphs.
-2.  **HTML Overlays**: The overlay layers render these blocks. When edited, the UI uses standard HTML content wrapping.
-3.  **Reflow Redraw**: Upon saving:
-    *   The backend overlays a **redaction block** (fill with page background color, usually white) over the coordinates to erase the original text layout completely.
-    *   The backend calls PyMuPDF's `insert_textbox` using the new text. `insert_textbox` automatically performs line-wrapping calculations matching the boundaries of the original bounding box.
+Each upload creates a UUID session directory under `settings.temp_dir`.
 
----
+```text
+<temp_dir>/
+  <session_id>/
+    manifest.json
+    versions/
+      0000.pdf
+      0001.pdf
+      0002.pdf
+```
 
-## 4. Client-Side OCR Pipeline (Scenario B)
+`manifest.json` stores:
 
-To run heavy OCR tasks without triggering server timeouts or freezing browser UI threads:
-1.  **Web Workers Isolation**: Tesseract.js is initialized inside Web Workers.
-2.  **Image Source Extraction**: The frontend grabs the high-resolution canvas bitmap using `canvas.toDataURL()`.
-3.  **Coordinate Mapping Conversion**:
-    *   Tesseract returns bounding boxes in canvas pixel coordinates.
-    *   The client maps canvas coordinates back to PDF point dimensions by multiplying coordinates by $\frac{1}{S}$, making them fully editable on the overlay.
+- `session_id`
+- original filename
+- version filenames
+- current version index
+- created/updated timestamps
 
----
+Every mutating endpoint uses `SessionManager.mutate(session_id, mutator)`:
 
-## 5. API Reference Manual
+1. Acquire the session lock.
+2. Open the current PDF version.
+3. Run the mutator against the open `fitz.Document`.
+4. Save a new PDF version.
+5. Drop redo history if editing after an undo.
+6. Trim old versions past `AEROPDF_MAX_HISTORY_VERSIONS`.
+7. Save the manifest atomically.
 
-### 1. File Upload
-*   **Route**: `POST /api/upload`
-*   **Payload**: Multipart Form (`file: File`)
-*   **Response**:
-    ```json
+This gives crash-resistant mutation boundaries and safe undo/redo. It also means no endpoint should open a session PDF and save it manually.
+
+## Text Editing
+
+### Find and Replace
+
+Engine functions:
+
+- `replace_text`
+- `replace_on_page`
+
+Behavior:
+
+- Finds matches on one page or the full document.
+- Adds redaction annotations for all matches on a page.
+- Applies redactions once per page.
+- Inserts replacement text at the captured baseline with a resolved base-14 font.
+- Supports whole-word and case-sensitive options.
+
+Important rule: call `apply_redactions()` after all redaction annotations for the page have been added. Calling it inside a per-match loop can corrupt content streams.
+
+### Block Editing
+
+Engine function:
+
+- `edit_block`
+
+Behavior:
+
+- Redacts the original bbox using a sampled background fill.
+- Resolves the requested font to a base-14 PDF font.
+- Uses `insert_textbox` to reflow text inside the original rectangle.
+- Auto-shrinks text until it fits or reaches `MIN_FONT_SIZE`.
+- Returns warnings instead of silently ignoring overflow risk.
+
+## OCR Pipeline
+
+OCR remains client-side because it is CPU-heavy and works on free hosting without a worker queue.
+
+Current flow:
+
+1. `PDFCanvas.tsx` detects scanned pages when a page has images but no text blocks.
+2. User starts OCR from the page overlay.
+3. Tesseract.js reads `canvas.toDataURL("image/png")` in a web worker.
+4. Paragraph bounding boxes are mapped from canvas pixels to PDF points.
+5. Frontend sends normalized blocks to `POST /api/ocr/{session_id}`.
+6. Backend inserts OCR text boxes into the current PDF through `insert_ocr_blocks`.
+7. `SessionManager` saves a new version snapshot, so OCR is undoable and exportable.
+
+OCR request shape:
+
+```json
+{
+  "page_number": 1,
+  "blocks": [
     {
-      "session_id": "uuid-string",
-      "filename": "document.pdf",
-      "metadata": { "title": "string", "author": "string", "pages": 12 },
-      "pages": [
-        {
-          "number": 1,
-          "width": 612,
-          "height": 792,
-          "blocks": [
-            {
-              "bbox": [x0, y0, x1, y1],
-              "lines": [
-                {
-                  "bbox": [x0, y0, x1, y1],
-                  "spans": [
-                    { "text": "Hello", "bbox": [x0, y0, x1, y1], "font": "Arial", "size": 12, "color": "#000000" }
-                  ]
-                }
-              ]
-            }
-          ],
-          "images": []
-        }
-      ]
-    }
-    ```
-
-### 2. Block Editing (Reflow Text)
-*   **Route**: `POST /api/edit-block/{session_id}`
-*   **Payload**:
-    ```json
-    {
-      "page_number": 1,
-      "original_bbox": [x0, y0, x1, y1],
-      "new_text": "Updated paragraph content...",
-      "font_size": 12.0,
+      "text": "Recognized text",
+      "bbox": [50, 80, 300, 120],
       "font_name": "Helvetica",
-      "hex_color": "#000000"
+      "font_size": 12,
+      "hex_color": "#000000",
+      "auto_shrink": true
     }
-    ```
-*   **Response**: Fresh layout schema containing recalculated pages coordinates: `{ "success": true, "pages": [...] }`.
+  ]
+}
+```
 
-### 3. Command AI Execution
-*   **Route**: `POST /api/command/{session_id}`
-*   **Payload**: `{ "command": "replace \"draft\" with \"final\" on page 1" }`
-*   **Response**: `{ "success": true, "message": "Result log...", "pages": [...] }`
+Known limitation: OCR text is inserted as visible text into approximate paragraph boxes. The app does not yet store OCR confidence, expose a review queue, or preserve a hidden searchable text layer separate from visible text.
 
----
+## Annotation and Drawing Model
 
-## 6. Blueprint to Scale for Production Grade
+Current annotation operations are committed directly into the PDF:
 
-To upgrade this prototype to a highly scalable, multi-tenant enterprise system:
+- `insert_image`
+- `draw_shape`
+- `add_highlight`
 
-### 1. Decoupled Worker Queue (Celery + Redis)
-For heavy OCR and multi-page flattening:
-*   Refactor FastAPI routes to offload tasks to **Celery workers** backed by a **Redis broker**.
-*   FastAPI should immediately return a `job_id` with HTTP 202 status.
-*   Frontend client polls job status or listens to updates via WebSockets.
+Validation exists for:
 
-### 2. Distributed Object Storage (S3)
-*   Do not save PDFs on local server storage.
-*   Upon upload, generate an **S3 Pre-signed URL** for direct client-to-bucket upload.
-*   Workers download PDF pages from S3 and upload final results with signed download URLs.
+- image MIME type
+- image byte size
+- positive width and height
+- valid shape/highlight bounding boxes
+- page bounds
+- line width greater than zero
 
-### 3. PostgreSQL Database
-*   Replace the in-memory `sessions` dictionary with a relational database (e.g., PostgreSQL).
-*   Create tables for `users`, `sessions`, `jobs`, and `document_history` (for Undo/Redo features).
+Current limitation: inserted images and shapes are not yet first-class selectable objects in frontend state. Once committed, they become part of the PDF rendering. The next product step is object selection/editing with move, resize, restyle, and delete.
 
-### 4. Advanced OCR (AWS Textract / DocAI)
-*   Integrate cloud OCR solutions like **AWS Textract** or **Google Cloud Document AI** inside Celery workers for layout analysis, column grouping, and tables parsing.
+## API Reference
 
-### 5. Font Extraction
-*   For custom embedded fonts, write a backend utility to extract embedded font streams (using PyMuPDF `doc.extract_font()`) and serve them dynamically as base64 CSS font resources to the browser client.
+### Upload Response
 
----
+```json
+{
+  "session_id": "uuid",
+  "filename": "document.pdf",
+  "metadata": {
+    "title": "",
+    "author": "",
+    "pages": 1,
+    "encrypted": false
+  },
+  "pages": [],
+  "history": {
+    "can_undo": false,
+    "can_redo": false,
+    "version": 0,
+    "total_versions": 1
+  }
+}
+```
 
-## 7. Deployment — backend on Render, frontend on Vercel
+### Shared Edit Response
 
-The two halves deploy as fully independent services. Because Render is a
-long-lived host (not serverless), the session/version model in `sessions.py`
-behaves as designed: undo/redo stacks and snapshot history persist across
-requests, and a mounted disk keeps them across restarts.
+```json
+{
+  "success": true,
+  "message": "",
+  "pages": [],
+  "metadata": {},
+  "history": {
+    "can_undo": true,
+    "can_redo": false,
+    "version": 1,
+    "total_versions": 2
+  },
+  "replacements_made": null,
+  "warnings": []
+}
+```
 
-1.  **Backend → Render** (`render.yaml` blueprint, or a manual Docker web service):
-    *   Root directory `backend/`, runtime Docker. Render injects the listen port
-        as `$PORT`; the Dockerfile binds it via
-        `CMD ["sh","-c","uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]`.
-        Hard-coding `8000` in the CMD would make Render's health check fail.
-    *   Health check path: `/api/health`.
-    *   `AEROPDF_ALLOWED_ORIGINS` — set to the Vercel frontend URL(s),
-        comma-separated, no trailing slash. This is the CORS allowlist applied by
-        `CORSMiddleware` in `main.py`.
-    *   `render.yaml` mounts a 1 GB disk at `/var/data` and sets
-        `AEROPDF_TEMP_DIR=/var/data/aeropdf_sessions` so version history survives
-        deploys/restarts. (Free plan has no disk — drop the `disk:` block; history
-        is then ephemeral but the service still works.)
+### Routes
 
-2.  **Frontend → Vercel** (`vercel.json` — a plain Vite SPA, no multi-service):
-    *   `vercel.json` builds `frontend/` (`cd frontend && npm install && npm run build`,
-        output `frontend/dist`) and rewrites all routes to `/index.html`.
-    *   Set `VITE_API_BASE` to the Render backend URL + `/api`, e.g.
-        `https://aeropdf-backend.onrender.com/api`.
-    *   `src/api.ts` reads `VITE_API_BASE` and falls back to `/api` (the Vite dev
-        proxy) only when it is unset. There is no `.vercel.app` auto-detect — the
-        backend lives on Render, so the env var must be set in production.
+| Method | Path | Request |
+| --- | --- | --- |
+| `GET` | `/api/health` | none |
+| `POST` | `/api/upload` | multipart `file` |
+| `GET` | `/api/download/{session_id}` | none |
+| `DELETE` | `/api/session/{session_id}` | none |
+| `POST` | `/api/replace/{session_id}` | `ReplaceRequest` |
+| `POST` | `/api/edit-block/{session_id}` | `EditBlockRequest` |
+| `POST` | `/api/ocr/{session_id}` | `PersistOCRRequest` |
+| `POST` | `/api/command/{session_id}` | `CommandRequest` |
+| `POST` | `/api/undo/{session_id}` | none |
+| `POST` | `/api/redo/{session_id}` | none |
+| `POST` | `/api/pages/rotate/{session_id}` | `RotateRequest` |
+| `POST` | `/api/pages/delete/{session_id}` | `DeletePagesRequest` |
+| `POST` | `/api/pages/reorder/{session_id}` | `ReorderRequest` |
+| `POST` | `/api/pages/duplicate/{session_id}` | `DuplicatePageRequest` |
+| `POST` | `/api/pages/insert-blank/{session_id}` | `InsertBlankRequest` |
+| `POST` | `/api/add-image/{session_id}` | multipart image + page/x/y/width/height |
+| `POST` | `/api/draw-shape/{session_id}` | `DrawShapeRequest` |
+| `POST` | `/api/add-highlight/{session_id}` | `HighlightRequest` |
 
+## Command Bar Grammar
+
+Supported commands:
+
+- `replace "a" with "b"`
+- `replace "a" with "b" on page 2`
+- `delete page 3`
+- `delete pages 2-4`
+- `delete pages 1,3,5`
+- `rotate page 2 left`
+- `rotate page 2 right`
+- `rotate page 2 180`
+- `rotate all right`
+- `duplicate page 4`
+- `insert page after page 2`
+
+This is a deterministic parser, not an LLM integration.
+
+## Deployment Architecture
+
+The app currently deploys as two independent services.
+
+```text
+Vercel static frontend
+  -> VITE_API_BASE
+  -> Render FastAPI backend
+  -> local session storage on backend instance
+```
+
+This is suitable for a free-tier prototype and short-lived editing sessions.
+
+For durable accounts, team workspaces, saved documents, or audit trails, the architecture should add:
+
+- Authentication provider.
+- Object storage for PDFs and versions.
+- Database for users, documents, sessions, and audit events.
+- Optional worker queue for OCR/merge/split jobs.
+
+Do not add a database just to support the current anonymous single-session editor. It adds deployment complexity without solving the current editing workflow.
+
+## Free-Tier-Friendly Upgrade Path
+
+Recommended order:
+
+1. Finish object editing in the current architecture.
+2. Add merge, split, page extraction, and drag reorder.
+3. Add Playwright smoke tests.
+4. Add optional auth and document metadata when the product needs saved documents.
+5. Add external PDF storage only when sessions must survive host restarts reliably.
+
+Good candidates when that phase arrives:
+
+- Supabase: relational metadata, auth, storage, simple team/workspace model.
+- Firebase: quick auth and simple document metadata.
+- Cloudinary or object storage equivalent: image/PDF asset storage.
+- Sentry: frontend/backend error monitoring.
+
+Keep the current no-deployment-change phase focused on feature depth and reliability.

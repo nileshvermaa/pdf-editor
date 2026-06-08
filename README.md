@@ -1,137 +1,256 @@
-# AeroPDF — Web-Based PDF Editor
+# AeroPDF
 
-A browser-based PDF editor with WYSIWYG text editing, client-side OCR for scanned pages, and one-command local setup.
+AeroPDF is a browser-based PDF editor built with FastAPI, PyMuPDF, React, TypeScript, Vite, PDF.js, and Tesseract.js.
 
-**Stack**: FastAPI + PyMuPDF (backend) · React + TypeScript + Vite + PDF.js (frontend)
-
----
+It is designed around a simple local-first editing model: upload a PDF, edit it through the browser, keep every mutation in a versioned session, undo/redo safely, and export the current PDF when finished.
 
 ## Features
 
-- **WYSIWYG text editing** — PDF pages render to `<canvas>` via PDF.js; transparent `<div>` overlays let you double-click any text span to edit it in the properties panel.
-- **Find & Replace** — replace a word or phrase across the whole document or a single page. Powered by PyMuPDF redaction + text insertion.
-- **Scanned page OCR** — pages with no text layer show an orange prompt; one click runs Tesseract.js in a Web Worker and makes the extracted text fully editable.
-- **AI command bar** — issue plain-English commands like `replace "Draft" with "Final"` or `replace "Old" with "New" on page 2`.
-- **Export** — download the modified PDF at any time.
+- Text block editing with PyMuPDF redaction and textbox reflow.
+- Find and replace across the whole document or the active page.
+- Client-side OCR for scanned pages, persisted back into the backend PDF session.
+- Page operations: rotate, duplicate, delete, insert blank pages, and reorder through the API.
+- Drawing and annotations: image insertion, rectangle, circle, line, arrow, and highlight support.
+- Undo/redo through versioned PDF snapshots.
+- Command bar for simple natural-language actions such as `replace "Draft" with "Final" on page 2`.
+- Export the current PDF at any point.
 
----
+## Tech Stack
 
-## Quick start
+| Area | Stack |
+| --- | --- |
+| Backend | FastAPI, PyMuPDF, Pydantic, pytest |
+| Frontend | React 18, TypeScript, Vite, PDF.js, Tesseract.js, lucide-react |
+| Local orchestration | `run.py` |
+| Deployment configs | Render backend, Vercel frontend, Docker Compose |
+| CI | GitHub Actions for backend tests and frontend build |
 
-### Requirements
+## Quick Start
 
-- Python 3.8+
-- Node.js 18+
+Requirements:
 
-### Run
+- Python 3.11 recommended. Python 3.8+ should work with the current dependency range.
+- Node.js 18+.
+- npm.
+
+Run both services:
 
 ```bash
-git clone https://github.com/nileshcf/pdf-editor.git
-cd pdf-editor
 python run.py
 ```
 
-`run.py` will:
-1. Install Python backend deps (`fastapi`, `uvicorn`, `pymupdf`, `python-multipart`).
-2. Run `npm install` inside `frontend/` if `node_modules` is missing.
-3. Start the FastAPI backend on `http://127.0.0.1:8000`.
-4. Start the Vite frontend on `http://localhost:5173` and open it in your browser.
+The script installs backend dependencies, installs frontend dependencies when needed, starts the FastAPI backend, starts the Vite dev server, and opens the local app.
 
-Press `Ctrl+C` to cleanly shut down both servers.
+Local URLs:
 
----
+| Service | URL |
+| --- | --- |
+| Frontend | `http://localhost:5173` |
+| Backend | `http://127.0.0.1:8000` |
+| Health check | `http://127.0.0.1:8000/api/health` |
+
+## Manual Setup
+
+Backend:
+
+```bash
+cd backend
+python -m pip install -r requirements.txt
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The Vite dev server proxies `/api` to `http://localhost:8000`.
+
+## Verification
+
+Run backend tests:
+
+```bash
+cd backend
+python -m pytest
+```
+
+Run frontend type check and production build:
+
+```bash
+cd frontend
+npx tsc --noEmit
+npm run build
+```
+
+The GitHub Actions workflow runs backend `pytest` and frontend `npm run build` on pushes and pull requests to `main`.
+
+## Project Structure
+
+```text
+pdf-editor/
+  run.py                    # Local dev orchestrator
+  README.md                 # User-facing setup and operations guide
+  ARCHITECTURE.md           # System architecture and API reference
+  CLAUDE.md                 # AI/human contributor guide
+  render.yaml               # Render backend blueprint
+  vercel.json               # Vercel frontend build config
+  docker-compose.yml        # Self-hosted Docker setup
+  .github/workflows/ci.yml  # Backend and frontend CI
+
+  backend/
+    main.py                 # FastAPI app assembly
+    config.py               # AEROPDF_* settings
+    deps.py                 # Shared session manager and response builder
+    logging_config.py       # Logging setup
+    schemas.py              # Pydantic API contracts
+    sessions.py             # Versioned session storage and undo/redo
+    pdf_engine.py           # Pure PDF mutation/extraction logic
+    commands.py             # Command bar interpreter
+    routers/
+      documents.py          # Upload, download, delete session
+      editing.py            # Replace, edit block, OCR persistence, commands, undo/redo
+      pages.py              # Page operations
+      annotations.py        # Image, shape, highlight operations
+    tests/
+      test_engine.py
+      test_sessions.py
+      test_schemas.py
+
+  frontend/
+    package.json
+    vite.config.ts
+    src/
+      api.ts
+      App.tsx
+      index.css
+      components/
+        CommandConsole.tsx
+        ImageInsertModal.tsx
+        PageToolbar.tsx
+        PDFCanvas.tsx
+        PropertiesPanel.tsx
+        ShapeToolbar.tsx
+        Sidebar.tsx
+```
+
+## API Overview
+
+All mutating editor endpoints return a shared `EditResponse`:
+
+```json
+{
+  "success": true,
+  "message": "Text block updated.",
+  "pages": [],
+  "metadata": {},
+  "history": {
+    "can_undo": true,
+    "can_redo": false,
+    "version": 1,
+    "total_versions": 2
+  },
+  "replacements_made": null,
+  "warnings": []
+}
+```
+
+Core endpoints:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Service health |
+| `POST` | `/api/upload` | Upload and parse a PDF |
+| `GET` | `/api/download/{session_id}` | Download current PDF version |
+| `DELETE` | `/api/session/{session_id}` | Delete a session |
+| `POST` | `/api/replace/{session_id}` | Find and replace text |
+| `POST` | `/api/edit-block/{session_id}` | Replace/reflow one text block |
+| `POST` | `/api/ocr/{session_id}` | Persist client OCR text into the PDF session |
+| `POST` | `/api/command/{session_id}` | Execute supported text command |
+| `POST` | `/api/undo/{session_id}` | Move session history backward |
+| `POST` | `/api/redo/{session_id}` | Move session history forward |
+| `POST` | `/api/pages/rotate/{session_id}` | Rotate pages |
+| `POST` | `/api/pages/delete/{session_id}` | Delete pages |
+| `POST` | `/api/pages/reorder/{session_id}` | Reorder pages |
+| `POST` | `/api/pages/duplicate/{session_id}` | Duplicate a page |
+| `POST` | `/api/pages/insert-blank/{session_id}` | Insert a blank page |
+| `POST` | `/api/add-image/{session_id}` | Insert an image |
+| `POST` | `/api/draw-shape/{session_id}` | Draw rectangle, circle, line, or arrow |
+| `POST` | `/api/add-highlight/{session_id}` | Add a highlight annotation |
+
+## Configuration
+
+Backend settings use the `AEROPDF_` environment prefix.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AEROPDF_TEMP_DIR` | system temp directory + `aeropdf_sessions` | Session and version storage |
+| `AEROPDF_MAX_FILE_MB` | `50` | Upload size limit |
+| `AEROPDF_MAX_PAGES` | `2000` | Page count limit |
+| `AEROPDF_SESSION_TTL_HOURS` | `24` | Idle session purge age |
+| `AEROPDF_MAX_HISTORY_VERSIONS` | `50` | Undo/redo version cap |
+| `AEROPDF_ALLOWED_ORIGINS` | localhost Vite origins | CORS allowlist |
+| `AEROPDF_LOG_LEVEL` | `INFO` | Log level |
+| `AEROPDF_JSON_LOGS` | `false` | JSON log output |
+| `AEROPDF_CLEANUP_ON_SHUTDOWN` | `false` | Remove temp session directory on shutdown |
+
+Frontend production builds should set:
+
+| Variable | Example |
+| --- | --- |
+| `VITE_API_BASE` | `https://your-render-backend.onrender.com/api` |
 
 ## Deployment
 
-### Backend on Render + frontend on Vercel (recommended)
+### Render Backend and Vercel Frontend
 
-Render is a long-lived host, so sessions and full undo/redo history survive
-between requests (unlike serverless). Deploy the two services in this order.
+The current deployment files keep backend and frontend separate.
 
-**1. Backend → Render**
+Backend on Render:
 
-1. Push this repo to GitHub.
-2. On [render.com](https://render.com): **New → Blueprint**, select this repo. Render
-   reads [`render.yaml`](./render.yaml) and provisions a native Python web service
-   (rooted at `backend/`, health check at `/api/health`).
-   - Or do it manually: **New → Web Service**, Root Directory `backend`, runtime
-     **Python**, build command `pip install -r requirements.txt`, start command
-     `uvicorn main:app --host 0.0.0.0 --port $PORT`.
-3. Note the service's public URL, e.g. `https://aeropdf-backend.onrender.com`.
-4. Set the CORS env var on the backend service (you'll fill the real value after
-   step 2 once you know the Vercel URL):
+1. Use `render.yaml` as a blueprint or create a Python web service manually.
+2. Root directory: `backend`.
+3. Build command: `pip install -r requirements.txt`.
+4. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+5. Health check: `/api/health`.
+6. Set `AEROPDF_ALLOWED_ORIGINS` to the Vercel frontend URL.
 
-   | Key | Value |
-   |-----|-------|
-   | `AEROPDF_ALLOWED_ORIGINS` | `https://your-frontend.vercel.app` |
+Frontend on Vercel:
 
-   Comma-separate multiple origins (e.g. add your `*.vercel.app` preview URL). No trailing slash.
+1. Import the repo.
+2. `vercel.json` builds from `frontend/` and serves `frontend/dist`.
+3. Set `VITE_API_BASE` to the Render backend URL plus `/api`.
 
-**2. Frontend → Vercel**
+Free-tier note: session storage is local to the backend instance. On free hosts without persistent disk, sessions can disappear on restart or redeploy. That is acceptable for the current no-account editor flow, but durable saved documents require external storage and a database in a later phase.
 
-1. Import the same repo on [vercel.com](https://vercel.com). `vercel.json` builds the
-   Vite app from `frontend/` and serves it as a static SPA — no extra settings needed.
-2. In **Project Settings → Environment Variables**, add:
-
-   | Key | Value |
-   |-----|-------|
-   | `VITE_API_BASE` | `https://aeropdf-backend.onrender.com/api` |
-
-   (your Render URL from step 1 + `/api`).
-3. Deploy, then go back and set `AEROPDF_ALLOWED_ORIGINS` on Render to the Vercel URL.
-
-> **Free-tier note**: Render free instances sleep when idle, so the first request
-> after a pause takes a few seconds to wake. Free instances also have no persistent
-> disk — session history resets on each deploy/restart. For durable history, use a
-> paid instance and keep the `disk:` block in `render.yaml`.
-
-### Docker (self-hosted)
+### Docker
 
 ```bash
 docker-compose up --build
-# frontend → http://localhost:80
-# backend  → http://localhost:8000
 ```
 
----
+Docker URLs:
 
-## Project structure
+| Service | URL |
+| --- | --- |
+| Frontend | `http://localhost:80` |
+| Backend | `http://localhost:8000` |
 
-```
-pdf-editor/
-├── run.py                  # Dev orchestrator
-├── vercel.json             # Vercel frontend (Vite SPA) build config
-├── render.yaml             # Render backend (Python) blueprint
-├── docker-compose.yml
-├── CLAUDE.md               # AI codebase guide (architecture, gotchas, patterns)
-├── ARCHITECTURE.md         # Deep-dive: coordinate math, API schemas, OCR pipeline
-│
-├── backend/
-│   ├── main.py             # FastAPI routes
-│   ├── utils.py            # PDF manipulation (PyMuPDF)
-│   ├── requirements.txt
-│   └── Dockerfile
-│
-└── frontend/
-    ├── index.html
-    ├── vite.config.ts
-    ├── .env.example        # Copy to .env.local for production overrides
-    └── src/
-        ├── App.tsx
-        ├── index.css       # Global theme (Dumb Ways to Die flat style)
-        └── components/
-            ├── PDFCanvas.tsx
-            ├── Sidebar.tsx
-            ├── PropertiesPanel.tsx
-            └── CommandConsole.tsx
-```
+## Development Rules
 
-For a full architectural deep-dive — coordinate mapping math, API schemas, OCR pipeline — see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+- Keep all PDF mutation in `backend/pdf_engine.py`.
+- Keep file opening, saving, locking, and versioning in `SessionManager`.
+- Every mutating route should return `EditResponse`.
+- Validate page numbers, bounding boxes, file sizes, and file types before committing a new PDF version.
+- Run backend tests and frontend build before merging.
 
-For an AI-readable codebase guide (patterns, gotchas, state flow) see [`CLAUDE.md`](./CLAUDE.md).
+## Near-Term Roadmap
 
----
-
-## Contributing
-
-PRs welcome. Run `tsc --noEmit` in `frontend/` before committing to catch type errors.
+- Select, move, resize, restyle, and delete inserted images and shapes.
+- Drag-and-drop page reorder in the sidebar.
+- Merge PDFs and extract selected pages.
+- More complete OCR review flow with confidence indicators.
+- Playwright smoke tests for upload, edit, undo/redo, OCR, shape insertion, and export.
