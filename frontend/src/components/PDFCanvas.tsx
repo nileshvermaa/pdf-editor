@@ -3,8 +3,6 @@ import { createWorker } from 'tesseract.js';
 import type { EditorObject, OCRBlockPayload, PDFPage, ShapeObjectType, UpdateObjectPayload } from '../api';
 import { getPdfDocument } from '../pdfCache';
 
-const SCALE = 1.25;
-
 /** Shift (and if necessary shrink) a rect so it lies fully inside the page. */
 const clampRectToPage = (
   bbox: [number, number, number, number],
@@ -54,6 +52,8 @@ interface PDFCanvasProps {
   page: PDFPage;
   pdfUrl: string;
   docVersion: number;
+  /** Zoom factor: CSS px per PDF point (1.25 = 125%). */
+  scale: number;
   onSelectBlock: (block: SelectedBlock | null) => void;
   onOCRComplete: (pageNum: number, ocrBlocks: OCRBlockPayload[]) => Promise<void> | void;
   selectedBlock: SelectedBlock | null;
@@ -83,6 +83,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   page,
   pdfUrl,
   docVersion,
+  scale,
   onSelectBlock,
   onOCRComplete,
   selectedBlock,
@@ -95,8 +96,18 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   onUpdateObject,
   assetUrlFor,
 }) => {
+  // Alias so every coordinate conversion below reads naturally.
+  const SCALE = scale;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
+  // True once any frame has been painted: re-renders (zoom, page switch,
+  // edits) keep showing the previous frame instead of a blocking overlay.
+  const hasFrameRef = useRef(false);
+  // The in-flight pdf.js render task. A new render must wait for the previous
+  // one to finish cancelling — starting two renders on one canvas makes
+  // pdf.js throw "Cannot use the same canvas during multiple render
+  // operations" and the page wedges on a stale frame.
+  const renderTaskRef = useRef<any>(null);
   const [rendering, setRendering] = useState(false);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocrProgress, setOcrProgress] = useState(0);
@@ -110,7 +121,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
 
   useEffect(() => {
     let cancelled = false;
-    let renderTask: any = null;
+    let pdfDoc: any = null;
 
     const renderPage = async () => {
       if (!canvasRef.current) return;
@@ -120,18 +131,39 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         const ctx = canvas.getContext('2d');
         if (!ctx || cancelled) return;
 
-        const pdf = await getPdfDocument(pdfUrl, docVersion);
+        // Serialise canvas access: cancel any in-flight render and wait for
+        // it to settle before drawing again. The wait is raced against a
+        // short timeout because a task cancelled before its first paint tick
+        // may never settle its promise (pdf.js quirk) — without the race the
+        // canvas wedges on the overlay forever.
+        const previousTask = renderTaskRef.current;
+        if (previousTask) {
+          renderTaskRef.current = null;
+          previousTask.cancel();
+          await Promise.race([
+            previousTask.promise.catch(() => {}),
+            new Promise((resolve) => setTimeout(resolve, 150)),
+          ]);
+        }
         if (cancelled) return;
 
-        const pdfPage = await pdf.getPage(page.number);
+        // Each run parses its own document from cached bytes (see pdfCache):
+        // documents are never shared across components, so a cancel here can
+        // never wedge another component's render.
+        pdfDoc = await getPdfDocument(pdfUrl, docVersion);
+        if (cancelled) return;
+
+        const pdfPage = await pdfDoc.getPage(page.number);
         if (cancelled) return;
 
         const viewport = pdfPage.getViewport({ scale: SCALE });
         canvas.width = viewport.width;
         canvas.height = viewport.height;
 
-        renderTask = pdfPage.render({ canvasContext: ctx, viewport });
+        const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
+        renderTaskRef.current = renderTask;
         await renderTask.promise;
+        hasFrameRef.current = true;
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') {
           console.error('PDF render error:', err);
@@ -144,9 +176,21 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     renderPage();
     return () => {
       cancelled = true;
-      renderTask?.cancel();
+      renderTaskRef.current?.cancel();
+      // Free this run's private document (worker memory) once the cancelled
+      // task has had a moment to flush.
+      const doc = pdfDoc;
+      if (doc) {
+        setTimeout(() => {
+          try {
+            doc.destroy();
+          } catch {
+            // already destroyed
+          }
+        }, 300);
+      }
     };
-  }, [pdfUrl, page.number, docVersion]);
+  }, [pdfUrl, page.number, docVersion, scale]);
 
   useEffect(() => {
     if (!dragState) return;
@@ -194,7 +238,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [dragState, onUpdateObject, page.width, page.height]);
+  }, [dragState, onUpdateObject, page.width, page.height, scale]);
 
   const isScanned = page.blocks.length === 0 && page.images.length > 0;
 
@@ -511,7 +555,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
 
   return (
     <div className="pdf-page-container" style={{ width: page.width * SCALE, height: page.height * SCALE }}>
-      {rendering && (
+      {rendering && !hasFrameRef.current && (
         <div className="rendering-overlay">
           <span className="rendering-label">Rendering page {page.number}...</span>
         </div>

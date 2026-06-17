@@ -64,6 +64,22 @@ async def upload_pdf(file: UploadFile = File(...)):
     )
 
 
+@router.get("/file/{session_id}")
+async def raw_file(session_id: str):
+    """Serve the raw current version for canvas rendering.
+
+    Unlike /download this never flattens: overlay objects are drawn live by
+    the frontend object layer, so baking them into the served bytes would
+    double-render every object on the canvas.
+    """
+    session = get_session_or_404(session_id)
+    return FileResponse(
+        session.current_path,
+        media_type="application/pdf",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/download/{session_id}")
 async def download_file(session_id: str):
     session = get_session_or_404(session_id)

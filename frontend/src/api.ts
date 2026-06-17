@@ -132,7 +132,11 @@ const post = (path: string, body?: unknown) =>
 
 export const api = {
   base: API_BASE,
+  // Export: flattens pending overlay objects server-side.
   downloadUrl: (sid: string) => `${API_BASE}/download/${sid}`,
+  // Canvas rendering: raw current version — objects are drawn by the DOM
+  // overlay, so the bitmap must NOT have them baked in (double render).
+  fileUrl: (sid: string) => `${API_BASE}/file/${sid}`,
 
   async upload(file: File) {
     const fd = new FormData();

@@ -177,7 +177,8 @@ Overlay objects are flattened into the PDF:
 Main routes:
 
 - `/api/upload`
-- `/api/download/{session_id}`
+- `/api/file/{session_id}` (raw current version — canvas/thumbnail rendering)
+- `/api/download/{session_id}` (export — flattens pending overlay objects)
 - `/api/session/{session_id}`
 - `/api/replace/{session_id}`
 - `/api/edit-block/{session_id}`
@@ -217,6 +218,7 @@ Main routes:
 - Do not bypass `SessionManager` for any history-changing operation.
 - Do not write object state directly into the frontend only; persist it through the API.
 - Do not make `download` serve stale unflattened PDFs when overlay objects exist.
+- Never point the canvas/thumbnails at `/api/download` — it flattens pending objects into the bytes, so every overlay object renders twice (bitmap + DOM layer). Rendering must use `/api/file` (raw current version).
 - Do not reintroduce a CDN PDF.js worker.
 - Do not add a database for the current anonymous session flow unless the product requirement actually changes.
 - `.object-overlay-layer` must keep `pointer-events: none` (objects re-enable themselves). It is a full-size child of `.editing-overlay-layer`, and the canvas click handler guards on `event.target === event.currentTarget` — if this div becomes clickable again, click-to-create, shape drawing, and click-to-deselect all silently die.

@@ -68,12 +68,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ pages, activePage, filename, p
       return;
     }
     let cancelled = false;
+    let doc: any = null;
 
     const loadPdf = async () => {
       try {
-        // Shared cache: the same document instance the main canvas uses —
-        // one download/parse per version instead of two.
-        const doc = await getPdfDocument(pdfUrl, docVersion);
+        // Bytes are fetched once per version (shared with the canvas), but
+        // this is the sidebar's OWN parsed document — see pdfCache.ts.
+        doc = await getPdfDocument(pdfUrl, docVersion);
         if (!cancelled) setPdfDoc(doc);
       } catch {
         if (!cancelled) setPdfDoc(null);
@@ -83,6 +84,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ pages, activePage, filename, p
     loadPdf();
     return () => {
       cancelled = true;
+      // Free the worker once in-flight thumbnail renders have settled
+      // (ThumbnailCanvas swallows render errors from a destroyed doc).
+      const stale = doc;
+      if (stale) {
+        setTimeout(() => {
+          try {
+            stale.destroy();
+          } catch {
+            // already destroyed
+          }
+        }, 300);
+      }
     };
   }, [pdfUrl, docVersion]);
 

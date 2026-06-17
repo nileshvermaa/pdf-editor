@@ -2,19 +2,18 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronDown,
   Download,
   FolderOpen,
   Image,
   MessageSquare,
+  Minus,
   MousePointer2,
-  PenTool,
-  Pencil,
+  PenLine,
+  Plus,
   Redo2,
-  Share2,
+  Shapes,
   Type,
   Undo2,
-  User,
   X,
 } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
@@ -66,13 +65,16 @@ const MOCK_PAGES: PDFPage[] = [1, 2, 3, 4].map((n) => ({
   objects: [],
 }));
 
+const ZOOM_LEVELS = [0.5, 0.625, 0.75, 0.875, 1, 1.25, 1.5, 1.75, 2, 2.5];
+const DEFAULT_ZOOM = 1.25;
+
 const TOOL_LIST: Array<{ key: ToolKey; icon: React.ReactNode; label: string }> = [
-  { key: 'cursor', icon: <MousePointer2 size={18} strokeWidth={1.5} />, label: 'Cursor (V)' },
-  { key: 'text', icon: <Type size={18} strokeWidth={1.5} />, label: 'Text Tool (T)' },
-  { key: 'image', icon: <Image size={18} strokeWidth={1.5} />, label: 'Image Tool' },
-  { key: 'draw', icon: <PenTool size={18} strokeWidth={1.5} />, label: 'Draw Tool' },
-  { key: 'signature', icon: <Pencil size={18} strokeWidth={1.5} />, label: 'Signature Pen' },
-  { key: 'comment', icon: <MessageSquare size={18} strokeWidth={1.5} />, label: 'Comment' },
+  { key: 'cursor', icon: <MousePointer2 size={18} strokeWidth={1.75} />, label: 'Cursor (V)' },
+  { key: 'text', icon: <Type size={18} strokeWidth={1.75} />, label: 'Text Tool (T)' },
+  { key: 'image', icon: <Image size={18} strokeWidth={1.75} />, label: 'Image Tool' },
+  { key: 'draw', icon: <Shapes size={18} strokeWidth={1.75} />, label: 'Shapes (rect, circle, line, arrow)' },
+  { key: 'signature', icon: <PenLine size={18} strokeWidth={1.75} />, label: 'Signature' },
+  { key: 'comment', icon: <MessageSquare size={18} strokeWidth={1.75} />, label: 'Comment' },
 ];
 
 function App() {
@@ -92,7 +94,28 @@ function App() {
   const [fillColor, setFillColor] = useState('#ffffff');
   const [lineWidth, setLineWidth] = useState(2);
   const [isDragging, setIsDragging] = useState(false);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const stageRef = useRef<HTMLElement | null>(null);
+
+  const zoomIn = useCallback(() => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 1e-3) ?? z), []);
+  const zoomOut = useCallback(() => setZoom((z) => [...ZOOM_LEVELS].reverse().find((l) => l < z - 1e-3) ?? z), []);
+  const resetZoom = useCallback(() => setZoom(DEFAULT_ZOOM), []);
+
+  // Ctrl+scroll zooms the canvas instead of the browser. Native listener
+  // because React registers wheel handlers passively (preventDefault no-ops).
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      if (e.deltaY < 0) zoomIn();
+      else zoomOut();
+    };
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    return () => stage.removeEventListener('wheel', onWheel);
+  }, [zoomIn, zoomOut]);
 
   const showToast = useCallback((text: string, type: Toast['type']) => {
     setToast({ text, type });
@@ -209,6 +232,7 @@ function App() {
       setSelectedBlock(null);
       setSelectedObjectId(null);
       setActiveTool('cursor');
+      setZoom(DEFAULT_ZOOM);
       showToast(`${data.filename} loaded`, 'success');
     } catch (err: any) {
       showToast(err.message || 'Upload failed', 'error');
@@ -464,6 +488,21 @@ function App() {
         if (sid && history?.can_redo && !isLoading) handleRedo();
         return;
       }
+      if (mod && (key === '=' || key === '+')) {
+        e.preventDefault();
+        zoomIn();
+        return;
+      }
+      if (mod && key === '-') {
+        e.preventDefault();
+        zoomOut();
+        return;
+      }
+      if (mod && key === '0') {
+        e.preventDefault();
+        resetZoom();
+        return;
+      }
       if (mod) return; // don't hijack browser shortcuts like Ctrl+S
 
       if (key === 'escape') {
@@ -484,16 +523,13 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid, history, isLoading, selectedObjectId, session]);
+  }, [sid, history, isLoading, selectedObjectId, session, zoomIn, zoomOut, resetZoom]);
 
   return (
     <div className="app-shell">
       <header className="top-toolbar">
         <div className="toolbar-left">
           <AeroLogo />
-          <button className="tool-btn" title="Menu">
-            <ChevronDown size={18} strokeWidth={1.5} />
-          </button>
           {TOOL_LIST.map((tool) => (
             <button
               key={tool.key}
@@ -512,27 +548,28 @@ function App() {
         </div>
 
         <div className="toolbar-right">
-          {!session && (
-            <button className="icon-action" title="Open PDF" onClick={openFilePicker}>
-              <FolderOpen size={16} strokeWidth={1.5} />
-            </button>
-          )}
-          <button className="icon-action" title="Undo" onClick={handleUndo} disabled={!history?.can_undo || isLoading}>
-            <Undo2 size={16} strokeWidth={1.5} />
+          <button className="icon-action" title="Open PDF" onClick={openFilePicker}>
+            <FolderOpen size={16} strokeWidth={1.75} />
           </button>
-          <button className="icon-action" title="Redo" onClick={handleRedo} disabled={!history?.can_redo || isLoading}>
-            <Redo2 size={16} strokeWidth={1.5} />
+          <button
+            className="icon-action"
+            title="Undo (Ctrl+Z)"
+            onClick={handleUndo}
+            disabled={!history?.can_undo || isLoading}
+          >
+            <Undo2 size={16} strokeWidth={1.75} />
           </button>
-          <button className="share-btn" disabled={!session}>
-            <Share2 size={15} strokeWidth={1.5} />
-            <span>Share</span>
+          <button
+            className="icon-action"
+            title="Redo (Ctrl+Shift+Z)"
+            onClick={handleRedo}
+            disabled={!history?.can_redo || isLoading}
+          >
+            <Redo2 size={16} strokeWidth={1.75} />
           </button>
           <button className="export-btn" onClick={handleExportPDF} disabled={!session}>
-            <Download size={15} strokeWidth={1.5} />
+            <Download size={15} strokeWidth={1.75} />
             <span>Export PDF</span>
-          </button>
-          <button className="avatar-btn" title="User">
-            <User size={16} strokeWidth={1.5} />
           </button>
         </div>
       </header>
@@ -542,12 +579,13 @@ function App() {
           pages={displayPages}
           activePage={activePage}
           filename={displayedFilename}
-          pdfUrl={session ? api.downloadUrl(session.session_id) : undefined}
+          pdfUrl={session ? api.fileUrl(session.session_id) : undefined}
           docVersion={history?.version ?? 0}
           setActivePage={setActivePage}
         />
 
         <main
+          ref={stageRef}
           className={`editor-stage${isDragging ? ' dragging' : ''}`}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
@@ -564,11 +602,36 @@ function App() {
             </div>
           )}
 
+          {session && (
+            <div className="zoom-bar">
+              <button
+                className="zoom-btn"
+                onClick={zoomOut}
+                disabled={zoom <= ZOOM_LEVELS[0] + 1e-3}
+                title="Zoom out (Ctrl+-)"
+              >
+                <Minus size={14} strokeWidth={2} />
+              </button>
+              <button className="zoom-value" onClick={resetZoom} title="Reset zoom (Ctrl+0)">
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                className="zoom-btn"
+                onClick={zoomIn}
+                disabled={zoom >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1] - 1e-3}
+                title="Zoom in (Ctrl+=)"
+              >
+                <Plus size={14} strokeWidth={2} />
+              </button>
+            </div>
+          )}
+
           {session ? (
             <PDFCanvas
               page={activePageData}
-              pdfUrl={api.downloadUrl(session.session_id)}
+              pdfUrl={api.fileUrl(session.session_id)}
               docVersion={history?.version ?? 0}
+              scale={zoom}
               onSelectBlock={handleSelectBlock}
               onOCRComplete={handleOCRComplete}
               selectedBlock={selectedBlock}
