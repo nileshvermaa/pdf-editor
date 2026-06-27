@@ -14,6 +14,7 @@ from schemas import (
     DuplicatePageRequest,
     EditResponse,
     InsertBlankRequest,
+    PageNumberRequest,
     ReorderRequest,
     RotateRequest,
 )
@@ -68,6 +69,17 @@ async def insert_blank(session_id: str, req: InsertBlankRequest):
         session_id,
         lambda doc: engine.insert_blank_page(doc, req.after_page, req.width, req.height),
         "Inserted blank page.",
+    )
+
+
+@router.post("/number/{session_id}", response_model=EditResponse)
+async def number_pages(session_id: str, req: PageNumberRequest):
+    return await _run(
+        session_id,
+        lambda doc: engine.add_page_numbers(
+            doc, req.position, req.start, req.fmt, req.font_size, req.hex_color
+        ),
+        "Added page numbers.",
     )
 
 

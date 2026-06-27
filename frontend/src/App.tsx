@@ -295,6 +295,8 @@ function App() {
   const handleInsertBlank = () => sid && run(() => api.insertBlank(sid, activePage), 'Blank page inserted');
   const handleReorderPages = (order: number[]) =>
     sid && run(() => api.reorderPages(sid, order), 'Pages reordered');
+  const handleNumberPages = () =>
+    sid && run(() => api.numberPages(sid, { position: 'bottom-center', fmt: '{n}' }), 'Page numbers added');
   const handleMergePdf = async (file: File) => {
     if (!sid) return;
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -763,6 +765,7 @@ function App() {
           onDelete={handleDelete}
           onInsertBlank={handleInsertBlank}
           onInsertPdf={() => mergeInputRef.current?.click()}
+          onNumberPages={handleNumberPages}
           strokeColor={strokeColor}
           onChangeStrokeColor={setStrokeColor}
           fillColor={fillColor}

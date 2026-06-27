@@ -5,6 +5,7 @@ import {
   Copy,
   FilePlus,
   FileStack,
+  Hash,
   Image as ImageIcon,
   RotateCcw,
   RotateCw,
@@ -45,6 +46,7 @@ interface PropertiesPanelProps {
   onDelete: () => void;
   onInsertBlank: () => void;
   onInsertPdf: () => void;
+  onNumberPages: () => void;
   strokeColor: string;
   onChangeStrokeColor: (color: string) => void;
   fillColor: string;
@@ -75,6 +77,7 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   onDelete,
   onInsertBlank,
   onInsertPdf,
+  onNumberPages,
   strokeColor,
   onChangeStrokeColor,
   fillColor,
@@ -217,6 +220,9 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           </button>
           <button className="mini-icon-btn" title="Insert PDF after this page" onClick={onInsertPdf} disabled={!canEdit || isLoading}>
             <FileStack size={14} strokeWidth={1.5} />
+          </button>
+          <button className="mini-icon-btn" title="Number all pages (bottom center)" onClick={onNumberPages} disabled={!canEdit || isLoading}>
+            <Hash size={14} strokeWidth={1.5} />
           </button>
           <button className="mini-icon-btn danger" title="Delete Page" onClick={onDelete} disabled={!canEdit || isLoading}>
             <Trash2 size={14} strokeWidth={1.5} />

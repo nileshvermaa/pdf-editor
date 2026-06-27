@@ -194,6 +194,24 @@ def test_merge_rejects_invalid_bytes():
     doc.close()
 
 
+def test_add_page_numbers_stamps_every_page():
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=400, height=400)
+    engine.add_page_numbers(doc, position="bottom-center", fmt="{n} of {total}")
+    assert "1 of 3" in doc[0].get_text()
+    assert "3 of 3" in doc[2].get_text()
+    doc.close()
+
+
+def test_add_page_numbers_rejects_bad_position():
+    doc = fitz.open()
+    doc.new_page()
+    with pytest.raises(ValueError):
+        engine.add_page_numbers(doc, position="middle")
+    doc.close()
+
+
 def test_insert_ocr_blocks_adds_text():
     doc = fitz.open()
     doc.new_page(width=300, height=200)

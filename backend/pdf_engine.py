@@ -443,6 +443,38 @@ def insert_blank_page(
     doc.new_page(pno=after_page, width=w, height=h)
 
 
+_NUMBER_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
+
+
+def add_page_numbers(
+    doc: "fitz.Document",
+    position: str = "bottom-center",
+    start: int = 1,
+    fmt: str = "{n}",
+    font_size: float = 10.0,
+    hex_color: str = "#000000",
+    margin: float = 28.0,
+) -> None:
+    """Stamp a page number on every page. ``fmt`` supports {n} and {total}."""
+    if position not in _NUMBER_POSITIONS:
+        raise ValueError(f"position must be one of {sorted(_NUMBER_POSITIONS)}")
+    color = hex_to_rgb01(hex_color)
+    total = doc.page_count
+    for i in range(total):
+        page = doc[i]
+        label = fmt.replace("{n}", str(start + i)).replace("{total}", str(total))
+        rect = page.rect
+        text_w = fitz.get_text_length(label, fontname="helv", fontsize=font_size)
+        if "left" in position:
+            x = margin
+        elif "right" in position:
+            x = rect.width - margin - text_w
+        else:
+            x = (rect.width - text_w) / 2
+        y = margin + font_size if position.startswith("top") else rect.height - margin
+        page.insert_text(fitz.Point(x, y), label, fontsize=font_size, fontname="helv", color=color)
+
+
 def merge_pdf(
     doc: "fitz.Document",
     other_bytes: bytes,

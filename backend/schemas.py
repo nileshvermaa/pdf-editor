@@ -105,6 +105,21 @@ class DuplicatePageRequest(BaseModel):
     page_number: int = Field(ge=1)
 
 
+class PageNumberRequest(BaseModel):
+    position: Literal[
+        "top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"
+    ] = "bottom-center"
+    start: int = Field(default=1, ge=0)
+    fmt: str = Field(default="{n}", min_length=1, max_length=64)
+    font_size: float = Field(default=10.0, ge=4.0, le=72.0)
+    hex_color: str = "#000000"
+
+    @field_validator("hex_color")
+    @classmethod
+    def _hex(cls, value: str) -> str:
+        return _validate_hex(value)
+
+
 class InsertBlankRequest(BaseModel):
     after_page: int = Field(ge=0)
     width: Optional[float] = Field(default=None, gt=0)
