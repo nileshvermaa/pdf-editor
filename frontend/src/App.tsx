@@ -292,6 +292,8 @@ function App() {
   const handleRotate = (deg: number) => sid && run(() => api.rotate(sid, activePage, deg), 'Page rotated');
   const handleDuplicate = () => sid && run(() => api.duplicate(sid, activePage), 'Page duplicated');
   const handleInsertBlank = () => sid && run(() => api.insertBlank(sid, activePage), 'Blank page inserted');
+  const handleReorderPages = (order: number[]) =>
+    sid && run(() => api.reorderPages(sid, order), 'Pages reordered');
   const handleDelete = () => {
     if (!sid) return;
     if (!window.confirm(`Delete page ${activePage}? This action can be undone.`)) return;
@@ -646,6 +648,7 @@ function App() {
           pdfUrl={session ? api.fileUrl(session.session_id) : undefined}
           docVersion={history?.version ?? 0}
           setActivePage={setActivePage}
+          onReorder={session ? handleReorderPages : undefined}
         />
 
         <main

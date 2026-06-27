@@ -18,6 +18,8 @@ interface SidebarProps {
   pdfUrl?: string;
   docVersion: number;
   setActivePage: (pageNum: number) => void;
+  /** Commit a new page ordering (original page numbers in their new positions). */
+  onReorder?: (order: number[]) => void;
 }
 
 const ThumbnailCanvas: React.FC<{ page: PDFPage; pdfDoc: any }> = ({ page, pdfDoc }) => {
@@ -59,8 +61,25 @@ const ThumbnailCanvas: React.FC<{ page: PDFPage; pdfDoc: any }> = ({ page, pdfDo
   return <canvas ref={canvasRef} className="thumb-canvas" />;
 };
 
-export const Sidebar: React.FC<SidebarProps> = ({ pages, activePage, filename, pdfUrl, docVersion, setActivePage }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ pages, activePage, filename, pdfUrl, docVersion, setActivePage, onReorder }) => {
   const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+
+  const handleDrop = (targetIdx: number) => {
+    if (dragIdx === null || dragIdx === targetIdx || !onReorder) {
+      setDragIdx(null);
+      setOverIdx(null);
+      return;
+    }
+    // Build the new order from the current page numbers, moving the dragged one.
+    const order = pages.map((p) => p.number);
+    const [moved] = order.splice(dragIdx, 1);
+    order.splice(targetIdx, 0, moved);
+    setDragIdx(null);
+    setOverIdx(null);
+    onReorder(order);
+  };
 
   useEffect(() => {
     if (!pdfUrl) {
@@ -108,14 +127,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ pages, activePage, filename, p
         </div>
       </div>
       <div className="thumb-list">
-        {pages.map((page) => {
+        {pages.map((page, idx) => {
           const isActive = page.number === activePage;
+          const canReorder = !!onReorder && pages.length > 1;
           return (
             <button
               key={page.number}
-              className={`thumb-item${isActive ? ' active' : ''}`}
+              className={`thumb-item${isActive ? ' active' : ''}${dragIdx === idx ? ' dragging' : ''}${
+                overIdx === idx && dragIdx !== null && dragIdx !== idx ? ' drop-target' : ''
+              }`}
               onClick={() => setActivePage(page.number)}
-              title={`Page ${page.number}`}
+              title={canReorder ? `Page ${page.number} — drag to reorder` : `Page ${page.number}`}
+              draggable={canReorder}
+              onDragStart={() => canReorder && setDragIdx(idx)}
+              onDragOver={(e) => {
+                if (!canReorder || dragIdx === null) return;
+                e.preventDefault();
+                if (overIdx !== idx) setOverIdx(idx);
+              }}
+              onDrop={(e) => {
+                if (!canReorder) return;
+                e.preventDefault();
+                handleDrop(idx);
+              }}
+              onDragEnd={() => {
+                setDragIdx(null);
+                setOverIdx(null);
+              }}
             >
               <div className="thumb-sheet">
                 <div className="thumb-preview">

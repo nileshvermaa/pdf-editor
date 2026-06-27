@@ -163,6 +163,8 @@ export const api = {
     post(`/pages/duplicate/${sid}`, { page_number: page }).then(parse<EditResponse>),
   insertBlank: (sid: string, afterPage: number) =>
     post(`/pages/insert-blank/${sid}`, { after_page: afterPage }).then(parse<EditResponse>),
+  reorderPages: (sid: string, order: number[]) =>
+    post(`/pages/reorder/${sid}`, { order }).then(parse<EditResponse>),
 
   createObject: (sid: string, body: CreateObjectPayload) => post(`/objects/${sid}`, body).then(parse<EditResponse>),
   updateObject: (sid: string, objectId: string, body: UpdateObjectPayload) =>

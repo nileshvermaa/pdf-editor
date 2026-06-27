@@ -340,6 +340,15 @@ button {
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+.thumb-item.dragging {
+  opacity: 0.4;
+}
+
+/* Drop indicator: a bar above the thumbnail the dragged page will land before. */
+.thumb-item.drop-target .thumb-sheet {
+  box-shadow: 0 -3px 0 var(--accent);
+}
+
 .thumb-preview {
   width: 100%;
   min-height: 126px;
