@@ -36,6 +36,61 @@ const clampDelta = (
   };
 };
 
+const MIN_OBJ_SIZE = 8; // PDF points — smallest a box may be resized to
+const clampNum = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+
+// The 8 resize handles, in render order, with their compass direction and cursor.
+const BOX_HANDLES: Array<{ pos: number; dir: string; cursor: string }> = [
+  { pos: 1, dir: 'nw', cursor: 'nwse-resize' },
+  { pos: 2, dir: 'n', cursor: 'ns-resize' },
+  { pos: 3, dir: 'ne', cursor: 'nesw-resize' },
+  { pos: 4, dir: 'w', cursor: 'ew-resize' },
+  { pos: 5, dir: 'e', cursor: 'ew-resize' },
+  { pos: 6, dir: 'sw', cursor: 'nesw-resize' },
+  { pos: 7, dir: 's', cursor: 'ns-resize' },
+  { pos: 8, dir: 'se', cursor: 'nwse-resize' },
+];
+
+/** Resize an ordered box bbox by dragging a compass handle (dx/dy in PDF pts). */
+const resizeBoxBBox = (
+  origin: [number, number, number, number],
+  dir: string,
+  dx: number,
+  dy: number,
+  pageW: number,
+  pageH: number
+): [number, number, number, number] => {
+  let [x0, y0, x1, y1] = origin;
+  if (dir.includes('w')) x0 = clampNum(x0 + dx, 0, pageW);
+  if (dir.includes('e')) x1 = clampNum(x1 + dx, 0, pageW);
+  if (dir.includes('n')) y0 = clampNum(y0 + dy, 0, pageH);
+  if (dir.includes('s')) y1 = clampNum(y1 + dy, 0, pageH);
+  // Enforce a minimum size without letting an edge cross past its opposite.
+  if (x1 - x0 < MIN_OBJ_SIZE) dir.includes('w') ? (x0 = x1 - MIN_OBJ_SIZE) : (x1 = x0 + MIN_OBJ_SIZE);
+  if (y1 - y0 < MIN_OBJ_SIZE) dir.includes('n') ? (y0 = y1 - MIN_OBJ_SIZE) : (y1 = y0 + MIN_OBJ_SIZE);
+  return [x0, y0, x1, y1];
+};
+
+/** Move one endpoint of a directional line/arrow bbox. */
+const resizeLineBBox = (
+  origin: [number, number, number, number],
+  endpoint: string,
+  dx: number,
+  dy: number,
+  pageW: number,
+  pageH: number
+): [number, number, number, number] => {
+  let [x0, y0, x1, y1] = origin;
+  if (endpoint === 'start') {
+    x0 = clampNum(x0 + dx, 0, pageW);
+    y0 = clampNum(y0 + dy, 0, pageH);
+  } else {
+    x1 = clampNum(x1 + dx, 0, pageW);
+    y1 = clampNum(y1 + dy, 0, pageH);
+  }
+  return [x0, y0, x1, y1];
+};
+
 type ToolKey = 'cursor' | 'text' | 'image' | 'draw' | 'signature' | 'comment';
 
 interface SelectedBlock {
@@ -79,6 +134,15 @@ interface DragState {
   delta: Point;
 }
 
+interface ResizeState {
+  id: string;
+  dir: string; // 'nw'..'se' for boxes, 'start'|'end' for lines/arrows
+  isLine: boolean;
+  start: Point;
+  origin: [number, number, number, number];
+  delta: Point;
+}
+
 export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   page,
   pdfUrl,
@@ -116,6 +180,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   const [startPoint, setStartPoint] = useState<Point | null>(null);
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [resizeState, setResizeState] = useState<ResizeState | null>(null);
 
   const objects = useMemo(() => [...(page.objects || [])].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)), [page.objects]);
 
@@ -240,6 +305,40 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     };
   }, [dragState, onUpdateObject, page.width, page.height, scale]);
 
+  // Resize via the selection handles. Mirrors the drag effect: track the
+  // pointer on window, preview live, commit the new bbox on release.
+  useEffect(() => {
+    if (!resizeState) return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      setResizeState((current) =>
+        current
+          ? { ...current, delta: { x: event.clientX - current.start.x, y: event.clientY - current.start.y } }
+          : null
+      );
+    };
+
+    const handlePointerUp = () => {
+      const current = resizeState;
+      setResizeState(null);
+      if (!current) return;
+      const dx = current.delta.x / SCALE;
+      const dy = current.delta.y / SCALE;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      const next = current.isLine
+        ? resizeLineBBox(current.origin, current.dir, dx, dy, page.width, page.height)
+        : resizeBoxBBox(current.origin, current.dir, dx, dy, page.width, page.height);
+      onUpdateObject(current.id, { bbox: next });
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [resizeState, onUpdateObject, page.width, page.height, scale]);
+
   const isScanned = page.blocks.length === 0 && page.images.length > 0;
 
   const isSelectedSpan = (bbox: number[]) => {
@@ -358,7 +457,36 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     });
   };
 
+  const handleResizeStart = (
+    event: React.PointerEvent<HTMLSpanElement>,
+    object: EditorObject,
+    dir: string,
+    isLine: boolean
+  ) => {
+    // Don't let the handle's pointerdown bubble to the object body (which would
+    // start a move) or the layer (which would deselect / draw).
+    event.stopPropagation();
+    event.preventDefault();
+    if (object.locked) return;
+    setResizeState({
+      id: object.id,
+      dir,
+      isLine,
+      start: { x: event.clientX, y: event.clientY },
+      origin: [...object.bbox] as [number, number, number, number],
+      delta: { x: 0, y: 0 },
+    });
+  };
+
   const getRenderBBox = (object: EditorObject): [number, number, number, number] => {
+    // Live resize preview takes priority over drag preview.
+    if (resizeState?.id === object.id) {
+      const dx = resizeState.delta.x / SCALE;
+      const dy = resizeState.delta.y / SCALE;
+      return resizeState.isLine
+        ? resizeLineBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height)
+        : resizeBoxBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height);
+    }
     if (dragState?.id !== object.id) return object.bbox;
     const { dx, dy } = clampDelta(
       object.bbox,
@@ -374,6 +502,33 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       object.bbox[3] + dy,
     ];
   };
+
+  // Interactive resize handles. Boxes get the 8 compass handles; lines/arrows
+  // get two handles at their actual endpoints (more intuitive than an envelope).
+  const renderBoxHandles = (object: EditorObject) =>
+    BOX_HANDLES.map((h) => (
+      <span
+        key={h.pos}
+        className={`selection-handle p-${h.pos}`}
+        style={{ cursor: h.cursor }}
+        onPointerDown={(e) => handleResizeStart(e, object, h.dir, false)}
+      />
+    ));
+
+  const renderLineHandles = (object: EditorObject, sx: number, sy: number, ex: number, ey: number) => (
+    <>
+      <span
+        className="selection-handle"
+        style={{ left: sx - 4, top: sy - 4, cursor: 'move' }}
+        onPointerDown={(e) => handleResizeStart(e, object, 'start', true)}
+      />
+      <span
+        className="selection-handle"
+        style={{ left: ex - 4, top: ey - 4, cursor: 'move' }}
+        onPointerDown={(e) => handleResizeStart(e, object, 'end', true)}
+      />
+    </>
+  );
 
   const renderObject = (object: EditorObject) => {
     const bbox = getRenderBBox(object);
@@ -403,7 +558,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
           onPointerDown={(event) => handleObjectPointerDown(event, object)}
         >
           <img src={assetUrlFor(object.asset_id)} alt="" draggable={false} />
-          {selected && Array.from({ length: 8 }).map((_, idx) => <span key={idx} className={`selection-handle p-${idx + 1}`} />)}
+          {selected && renderBoxHandles(object)}
         </div>
       );
     }
@@ -438,7 +593,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
                 markerEnd={object.shape_type === 'arrow' ? `url(#arrow-${object.id})` : undefined}
               />
             </svg>
-            {selected && Array.from({ length: 8 }).map((_, idx) => <span key={idx} className={`selection-handle p-${idx + 1}`} />)}
+            {selected && renderLineHandles(object, sx, sy, ex, ey)}
           </div>
         );
       }
@@ -455,7 +610,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
           }}
           onPointerDown={(event) => handleObjectPointerDown(event, object)}
         >
-          {selected && Array.from({ length: 8 }).map((_, idx) => <span key={idx} className={`selection-handle p-${idx + 1}`} />)}
+          {selected && renderBoxHandles(object)}
         </div>
       );
     }
@@ -487,7 +642,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         onPointerDown={(event) => handleObjectPointerDown(event, object)}
       >
         <span>{object.text}</span>
-        {selected && Array.from({ length: 8 }).map((_, idx) => <span key={idx} className={`selection-handle p-${idx + 1}`} />)}
+        {selected && renderBoxHandles(object)}
       </div>
     );
   };
