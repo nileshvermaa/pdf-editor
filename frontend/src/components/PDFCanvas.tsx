@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createWorker } from 'tesseract.js';
-import type { EditorObject, OCRBlockPayload, PDFPage, ShapeObjectType, UpdateObjectPayload } from '../api';
+import type { EditorObject, OCRBlockPayload, PDFPage, ShapeObjectType, TextLikeObject, UpdateObjectPayload } from '../api';
 import { getPdfDocument } from '../pdfCache';
 
 /** Shift (and if necessary shrink) a rect so it lies fully inside the page. */
@@ -181,6 +181,9 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+  // Inline (on-canvas) text editing: the object id being edited + its draft text.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState('');
 
   const objects = useMemo(() => [...(page.objects || [])].sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0)), [page.objects]);
 
@@ -445,8 +448,25 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     }
   };
 
+  const beginInlineEdit = (object: TextLikeObject) => {
+    if (object.locked) return;
+    onSelectObject(object.id);
+    setEditingText(object.text || '');
+    setEditingId(object.id);
+  };
+
+  const commitInlineEdit = (object: TextLikeObject) => {
+    setEditingId(null);
+    const next = editingText.trim();
+    // Backend rejects empty text-like objects, so an empty edit reverts.
+    if (next && next !== (object.text || '')) {
+      onUpdateObject(object.id, { text: editingText });
+    }
+  };
+
   const handleObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, object: EditorObject) => {
     event.stopPropagation();
+    if (editingId === object.id) return; // let the inline editor own the pointer
     onSelectObject(object.id);
     if (activeTool !== 'cursor' || object.locked) return;
     setDragState({
@@ -634,15 +654,40 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       borderWidth: object.type === 'comment' ? (object.line_width || 1.5) * SCALE : 1,
     };
 
+    const editing = editingId === object.id;
     return (
       <div
         key={object.id}
-        className={`canvas-object textlike-object ${object.type}${selected ? ' selected' : ''}`}
+        className={`canvas-object textlike-object ${object.type}${selected ? ' selected' : ''}${editing ? ' editing' : ''}`}
         style={textStyle}
         onPointerDown={(event) => handleObjectPointerDown(event, object)}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          beginInlineEdit(object);
+        }}
       >
-        <span>{object.text}</span>
-        {selected && renderBoxHandles(object)}
+        {editing ? (
+          <textarea
+            className="inline-text-editor"
+            autoFocus
+            value={editingText}
+            onChange={(e) => setEditingText(e.target.value)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onBlur={() => commitInlineEdit(object)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setEditingId(null); // cancel without committing
+              } else if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                commitInlineEdit(object);
+              }
+            }}
+          />
+        ) : (
+          <span>{object.text}</span>
+        )}
+        {selected && !editing && renderBoxHandles(object)}
       </div>
     );
   };
