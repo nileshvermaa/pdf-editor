@@ -360,6 +360,65 @@ function App() {
     }
   };
 
+  // Duplicate the selected object as a new object offset slightly down-right.
+  const handleDuplicateObject = async () => {
+    if (!sid || !selectedObject) return;
+    const o = selectedObject;
+    const off = 14;
+    const page = session?.pages.find((p) => p.number === o.page_number);
+    const pw = page?.width ?? 9999;
+    const ph = page?.height ?? 9999;
+    // Offset both corners, then shift back so the copy stays fully on-page.
+    let [x0, y0, x1, y1] = o.bbox;
+    const shiftX = Math.min(off, pw - Math.max(x0, x1));
+    const shiftY = Math.min(off, ph - Math.max(y0, y1));
+    x0 += shiftX; x1 += shiftX; y0 += shiftY; y1 += shiftY;
+    const bbox: [number, number, number, number] = [x0, y0, x1, y1];
+
+    // Carry over every type-specific field the create endpoint accepts.
+    const payload: any = {
+      page_number: o.page_number,
+      type: o.type,
+      bbox,
+      rotation: o.rotation,
+      opacity: o.opacity,
+    };
+    if (o.type === 'shape') {
+      Object.assign(payload, {
+        shape_type: o.shape_type,
+        stroke_color: o.stroke_color,
+        fill_color: o.fill_color,
+        line_width: o.line_width,
+      });
+    } else if (o.type === 'image') {
+      payload.asset_id = o.asset_id;
+    } else {
+      Object.assign(payload, {
+        text: o.text,
+        font_family: o.font_family,
+        font_size: o.font_size,
+        font_weight: o.font_weight,
+        font_style: o.font_style,
+        color: o.color,
+        align: o.align,
+        stroke_color: o.stroke_color,
+        fill_color: o.fill_color,
+        line_width: o.line_width,
+      });
+    }
+
+    setIsLoading(true);
+    try {
+      const data = await api.createObject(sid, payload);
+      const objectId = findTopObjectId(data.pages, o.page_number);
+      applyEdit(data, 'Duplicated object', { selectObjectId: objectId, clearBlock: true });
+    } catch (err: any) {
+      showToast(err.message || 'Duplicate failed', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleCreateObject = async (
     tool: Extract<ToolKey, 'text' | 'comment' | 'signature'>,
     bbox: [number, number, number, number]
@@ -501,6 +560,11 @@ function App() {
       if (mod && key === '0') {
         e.preventDefault();
         resetZoom();
+        return;
+      }
+      if (mod && key === 'd') {
+        e.preventDefault();
+        if (sid && selectedObjectId && !isLoading) handleDuplicateObject();
         return;
       }
       if (mod) return; // don't hijack browser shortcuts like Ctrl+S
