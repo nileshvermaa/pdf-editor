@@ -443,6 +443,39 @@ def insert_blank_page(
     doc.new_page(pno=after_page, width=w, height=h)
 
 
+def merge_pdf(
+    doc: "fitz.Document",
+    other_bytes: bytes,
+    after_page: Optional[int] = None,
+    max_total_pages: Optional[int] = None,
+) -> int:
+    """Insert all pages of another PDF after ``after_page`` (1-based; None = append).
+
+    Returns the number of pages inserted.
+    """
+    try:
+        src = fitz.open(stream=other_bytes, filetype="pdf")
+    except Exception as exc:
+        raise ValueError(f"Could not open the PDF to insert: {exc}") from exc
+    try:
+        if src.is_encrypted and not src.authenticate(""):
+            raise ValueError("The PDF to insert is password-protected.")
+        if src.page_count == 0:
+            raise ValueError("The PDF to insert has no pages.")
+        if max_total_pages is not None and doc.page_count + src.page_count > max_total_pages:
+            raise ValueError(
+                f"Merging would exceed the {max_total_pages}-page limit "
+                f"({doc.page_count} + {src.page_count})."
+            )
+        # start_at is the 0-based index the source is inserted *in front of*;
+        # inserting after a 1-based page N means index N. None => append.
+        start_at = doc.page_count if after_page is None else max(0, min(after_page, doc.page_count))
+        doc.insert_pdf(src, start_at=start_at)
+        return src.page_count
+    finally:
+        src.close()
+
+
 # --------------------------------------------------------------------------- #
 #  Annotations & Drawing
 # --------------------------------------------------------------------------- #

@@ -151,6 +151,49 @@ def test_reorder_must_be_permutation():
     doc.close()
 
 
+def _two_page_pdf_bytes() -> bytes:
+    src = fitz.open()
+    src.new_page(width=200, height=200)
+    src.new_page(width=200, height=200)
+    data = src.tobytes()
+    src.close()
+    return data
+
+
+def test_merge_appends_at_end():
+    doc = fitz.open()
+    doc.new_page(width=300, height=300)
+    n = engine.merge_pdf(doc, _two_page_pdf_bytes())  # append
+    assert n == 2
+    assert doc.page_count == 3
+    doc.close()
+
+
+def test_merge_inserts_after_page():
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=300, height=300)
+    engine.merge_pdf(doc, _two_page_pdf_bytes(), after_page=1)  # after page 1
+    assert doc.page_count == 5
+    doc.close()
+
+
+def test_merge_respects_page_limit():
+    doc = fitz.open()
+    doc.new_page()
+    with pytest.raises(ValueError):
+        engine.merge_pdf(doc, _two_page_pdf_bytes(), max_total_pages=2)
+    doc.close()
+
+
+def test_merge_rejects_invalid_bytes():
+    doc = fitz.open()
+    doc.new_page()
+    with pytest.raises(ValueError):
+        engine.merge_pdf(doc, b"not a pdf")
+    doc.close()
+
+
 def test_insert_ocr_blocks_adds_text():
     doc = fitz.open()
     doc.new_page(width=300, height=200)

@@ -96,6 +96,7 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mergeInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLElement | null>(null);
 
   const zoomIn = useCallback(() => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 1e-3) ?? z), []);
@@ -294,6 +295,15 @@ function App() {
   const handleInsertBlank = () => sid && run(() => api.insertBlank(sid, activePage), 'Blank page inserted');
   const handleReorderPages = (order: number[]) =>
     sid && run(() => api.reorderPages(sid, order), 'Pages reordered');
+  const handleMergePdf = async (file: File) => {
+    if (!sid) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      showToast('Only PDF files can be inserted.', 'error');
+      return;
+    }
+    // Insert the uploaded PDF's pages right after the current page.
+    await run(() => api.mergePdf(sid, file, activePage), 'PDF inserted');
+  };
   const handleDelete = () => {
     if (!sid) return;
     if (!window.confirm(`Delete page ${activePage}? This action can be undone.`)) return;
@@ -752,6 +762,7 @@ function App() {
           onDuplicate={handleDuplicate}
           onDelete={handleDelete}
           onInsertBlank={handleInsertBlank}
+          onInsertPdf={() => mergeInputRef.current?.click()}
           strokeColor={strokeColor}
           onChangeStrokeColor={setStrokeColor}
           fillColor={fillColor}
@@ -763,6 +774,16 @@ function App() {
       </div>
 
       <input type="file" ref={fileInputRef} onChange={onFileChange} accept="application/pdf" style={{ display: 'none' }} />
+      <input
+        type="file"
+        ref={mergeInputRef}
+        onChange={(e) => {
+          if (e.target.files?.[0]) handleMergePdf(e.target.files[0]);
+          e.target.value = '';
+        }}
+        accept="application/pdf"
+        style={{ display: 'none' }}
+      />
 
       {showImageModal && session && (
         <ImageInsertModal onClose={() => setShowImageModal(false)} onInsert={handleInsertImage} isLoading={isLoading} />

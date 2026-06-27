@@ -165,6 +165,12 @@ export const api = {
     post(`/pages/insert-blank/${sid}`, { after_page: afterPage }).then(parse<EditResponse>),
   reorderPages: (sid: string, order: number[]) =>
     post(`/pages/reorder/${sid}`, { order }).then(parse<EditResponse>),
+  async mergePdf(sid: string, file: File, afterPage?: number) {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (afterPage != null) fd.append('after_page', String(afterPage));
+    return parse<EditResponse>(await fetch(`${API_BASE}/pages/merge/${sid}`, { method: 'POST', body: fd }));
+  },
 
   createObject: (sid: string, body: CreateObjectPayload) => post(`/objects/${sid}`, body).then(parse<EditResponse>),
   updateObject: (sid: string, objectId: string, body: UpdateObjectPayload) =>
