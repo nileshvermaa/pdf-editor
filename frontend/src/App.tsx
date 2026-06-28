@@ -88,6 +88,23 @@ function parsePageRange(spec: string, total: number): number[] {
   return [...out].filter((n) => n >= 1 && n <= total).sort((x, y) => x - y);
 }
 
+/** Shift a bbox by (dx,dy) PDF points, clamping its envelope to the page. */
+function shiftBBoxClamped(
+  b: [number, number, number, number],
+  dx: number,
+  dy: number,
+  pw: number,
+  ph: number
+): [number, number, number, number] {
+  const minX = Math.min(b[0], b[2]);
+  const maxX = Math.max(b[0], b[2]);
+  const minY = Math.min(b[1], b[3]);
+  const maxY = Math.max(b[1], b[3]);
+  const cdx = Math.min(Math.max(dx, -minX), pw - maxX);
+  const cdy = Math.min(Math.max(dy, -minY), ph - maxY);
+  return [b[0] + cdx, b[1] + cdy, b[2] + cdx, b[3] + cdy];
+}
+
 const TOOL_LIST: Array<{ key: ToolKey; icon: React.ReactNode; label: string }> = [
   { key: 'cursor', icon: <MousePointer2 size={18} strokeWidth={1.75} />, label: 'Cursor (V)' },
   { key: 'text', icon: <Type size={18} strokeWidth={1.75} />, label: 'Text Tool (T)' },
@@ -119,6 +136,9 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mergeInputRef = useRef<HTMLInputElement | null>(null);
   const stageRef = useRef<HTMLElement | null>(null);
+  // Accumulates arrow-key nudges so the whole gesture commits as ONE history
+  // entry (debounced), instead of one version per keypress.
+  const nudgeRef = useRef<{ id: string; bbox: [number, number, number, number]; timer: number } | null>(null);
 
   const zoomIn = useCallback(() => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 1e-3) ?? z), []);
   const zoomOut = useCallback(() => setZoom((z) => [...ZOOM_LEVELS].reverse().find((l) => l < z - 1e-3) ?? z), []);
@@ -485,6 +505,46 @@ function App() {
     }
   };
 
+  // Arrow-key nudge: move the selected object optimistically on each press and
+  // commit once after the user pauses (quiet — no per-press toast or version).
+  const commitNudge = useCallback(() => {
+    const n = nudgeRef.current;
+    nudgeRef.current = null;
+    if (!n || !sid) return;
+    api
+      .updateObject(sid, n.id, { bbox: n.bbox })
+      .then((data) => syncEdit(data, { keepObjectSelection: true, selectObjectId: n.id, clearBlock: true }))
+      .catch((err: any) => showToast(err.message || 'Move failed', 'error'));
+  }, [sid, syncEdit, showToast]);
+
+  const nudgeSelectedObject = useCallback(
+    (dx: number, dy: number) => {
+      if (!sid || !selectedObject) return;
+      const page = session?.pages.find((p) => p.number === selectedObject.page_number);
+      const pw = page?.width ?? 9999;
+      const ph = page?.height ?? 9999;
+      const base =
+        nudgeRef.current?.id === selectedObject.id ? nudgeRef.current.bbox : (selectedObject.bbox as [number, number, number, number]);
+      const next = shiftBBoxClamped(base, dx, dy, pw, ph);
+      // Optimistic local move for instant feedback.
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              pages: prev.pages.map((pg) => ({
+                ...pg,
+                objects: pg.objects?.map((o) => (o.id === selectedObject.id ? { ...o, bbox: next } : o)),
+              })),
+            }
+          : prev
+      );
+      if (nudgeRef.current?.timer) window.clearTimeout(nudgeRef.current.timer);
+      const timer = window.setTimeout(commitNudge, 400);
+      nudgeRef.current = { id: selectedObject.id, bbox: next, timer };
+    },
+    [sid, selectedObject, session, commitNudge]
+  );
+
   const handleCreateObject = async (
     tool: Extract<ToolKey, 'text' | 'comment' | 'signature'>,
     bbox: [number, number, number, number]
@@ -646,6 +706,21 @@ function App() {
         handleDeleteObject();
         return;
       }
+      // Arrow-key nudge of the selected object (Shift = 10pt step).
+      if (selectedObjectId && !isLoading) {
+        const step = e.shiftKey ? 10 : 1;
+        const delta: Record<string, [number, number]> = {
+          arrowleft: [-step, 0],
+          arrowright: [step, 0],
+          arrowup: [0, -step],
+          arrowdown: [0, step],
+        };
+        if (delta[key]) {
+          e.preventDefault();
+          nudgeSelectedObject(delta[key][0], delta[key][1]);
+          return;
+        }
+      }
       if (key === 'v') setActiveTool('cursor');
       if (key === 't' && session) setActiveTool('text');
     };
@@ -653,7 +728,7 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid, history, isLoading, selectedObjectId, session, zoomIn, zoomOut, resetZoom]);
+  }, [sid, history, isLoading, selectedObjectId, session, zoomIn, zoomOut, resetZoom, nudgeSelectedObject]);
 
   return (
     <div className="app-shell">
