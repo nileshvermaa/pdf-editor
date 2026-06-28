@@ -20,6 +20,7 @@ import { Sidebar } from './components/Sidebar';
 import { PDFCanvas } from './components/PDFCanvas';
 import { PropertiesPanel } from './components/PropertiesPanel';
 import { ImageInsertModal } from './components/ImageInsertModal';
+import { PromptModal } from './components/PromptModal';
 import { AeroLogo } from './components/AeroLogo';
 import {
   api,
@@ -68,6 +69,25 @@ const MOCK_PAGES: PDFPage[] = [1, 2, 3, 4].map((n) => ({
 const ZOOM_LEVELS = [0.5, 0.625, 0.75, 0.875, 1, 1.25, 1.5, 1.75, 2, 2.5];
 const DEFAULT_ZOOM = 1.25;
 
+/** Parse a page-range string like "1-3,5" into sorted, in-bounds page numbers. */
+function parsePageRange(spec: string, total: number): number[] {
+  const out = new Set<number>();
+  for (const part of spec.split(',')) {
+    const p = part.trim();
+    if (!p) continue;
+    if (p.includes('-')) {
+      const [a, b] = p.split('-').map((s) => parseInt(s.trim(), 10));
+      if (Number.isFinite(a) && Number.isFinite(b)) {
+        for (let n = Math.min(a, b); n <= Math.max(a, b); n++) out.add(n);
+      }
+    } else {
+      const n = parseInt(p, 10);
+      if (Number.isFinite(n)) out.add(n);
+    }
+  }
+  return [...out].filter((n) => n >= 1 && n <= total).sort((x, y) => x - y);
+}
+
 const TOOL_LIST: Array<{ key: ToolKey; icon: React.ReactNode; label: string }> = [
   { key: 'cursor', icon: <MousePointer2 size={18} strokeWidth={1.75} />, label: 'Cursor (V)' },
   { key: 'text', icon: <Type size={18} strokeWidth={1.75} />, label: 'Text Tool (T)' },
@@ -89,6 +109,7 @@ function App() {
   // click on the page silently create a text object.
   const [activeTool, setActiveTool] = useState<ToolKey>('cursor');
   const [showImageModal, setShowImageModal] = useState(false);
+  const [docModal, setDocModal] = useState<'watermark' | 'extract' | null>(null);
   const [activeShape, setActiveShape] = useState<ShapeObjectType>('rect');
   const [strokeColor, setStrokeColor] = useState('#000000');
   const [fillColor, setFillColor] = useState('#ffffff');
@@ -297,6 +318,37 @@ function App() {
     sid && run(() => api.reorderPages(sid, order), 'Pages reordered');
   const handleNumberPages = () =>
     sid && run(() => api.numberPages(sid, { position: 'bottom-center', fmt: '{n}' }), 'Page numbers added');
+  const handleWatermark = (text: string) => {
+    if (!sid) return;
+    setDocModal(null);
+    run(() => api.watermark(sid, { text }), 'Watermark applied');
+  };
+  const handleExtract = async (rangeStr: string) => {
+    if (!sid || !session) return;
+    const pages = parsePageRange(rangeStr, session.pages.length);
+    if (!pages.length) {
+      showToast('Enter a valid page range, e.g. 1-3,5', 'error');
+      return;
+    }
+    setDocModal(null);
+    setIsLoading(true);
+    try {
+      const blob = await api.extractPages(sid, pages);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'extracted.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast(`Extracted ${pages.length} page(s)`, 'success');
+    } catch (e: any) {
+      showToast(e.message || 'Extract failed', 'error');
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const handleMergePdf = async (file: File) => {
     if (!sid) return;
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -766,6 +818,8 @@ function App() {
           onInsertBlank={handleInsertBlank}
           onInsertPdf={() => mergeInputRef.current?.click()}
           onNumberPages={handleNumberPages}
+          onWatermark={() => setDocModal('watermark')}
+          onExtract={() => setDocModal('extract')}
           strokeColor={strokeColor}
           onChangeStrokeColor={setStrokeColor}
           fillColor={fillColor}
@@ -790,6 +844,34 @@ function App() {
 
       {showImageModal && session && (
         <ImageInsertModal onClose={() => setShowImageModal(false)} onInsert={handleInsertImage} isLoading={isLoading} />
+      )}
+
+      {docModal === 'watermark' && session && (
+        <PromptModal
+          title="Add watermark"
+          label="Watermark text"
+          defaultValue="DRAFT"
+          placeholder="e.g. CONFIDENTIAL"
+          confirmLabel="Apply to all pages"
+          hint="Stamped diagonally and semi-transparent across every page."
+          isLoading={isLoading}
+          onConfirm={handleWatermark}
+          onClose={() => setDocModal(null)}
+        />
+      )}
+
+      {docModal === 'extract' && session && (
+        <PromptModal
+          title="Extract pages"
+          label="Page range"
+          defaultValue={`1-${session.pages.length}`}
+          placeholder="e.g. 1-3,5"
+          confirmLabel="Download selected pages"
+          hint="Downloads a new PDF with just these pages. Your document is unchanged."
+          isLoading={isLoading}
+          onConfirm={handleExtract}
+          onClose={() => setDocModal(null)}
+        />
       )}
     </div>
   );

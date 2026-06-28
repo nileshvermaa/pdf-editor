@@ -105,6 +105,30 @@ class DuplicatePageRequest(BaseModel):
     page_number: int = Field(ge=1)
 
 
+class ExtractPagesRequest(BaseModel):
+    page_numbers: List[int] = Field(min_length=1)
+
+    @field_validator("page_numbers")
+    @classmethod
+    def _valid(cls, value: List[int]) -> List[int]:
+        if any(p < 1 for p in value):
+            raise ValueError("page_numbers must be >= 1")
+        return value
+
+
+class WatermarkRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=120)
+    opacity: float = Field(default=0.18, ge=0.0, le=1.0)
+    font_size: float = Field(default=48.0, ge=8.0, le=200.0)
+    hex_color: str = "#888888"
+    angle: int = Field(default=45, ge=-90, le=90)
+
+    @field_validator("hex_color")
+    @classmethod
+    def _hex(cls, value: str) -> str:
+        return _validate_hex(value)
+
+
 class PageNumberRequest(BaseModel):
     position: Literal[
         "top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"

@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 
 import pdf_engine as engine
 from config import settings
@@ -13,10 +14,12 @@ from schemas import (
     DeletePagesRequest,
     DuplicatePageRequest,
     EditResponse,
+    ExtractPagesRequest,
     InsertBlankRequest,
     PageNumberRequest,
     ReorderRequest,
     RotateRequest,
+    WatermarkRequest,
 )
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
@@ -69,6 +72,31 @@ async def insert_blank(session_id: str, req: InsertBlankRequest):
         session_id,
         lambda doc: engine.insert_blank_page(doc, req.after_page, req.width, req.height),
         "Inserted blank page.",
+    )
+
+
+@router.post("/watermark/{session_id}", response_model=EditResponse)
+async def watermark(session_id: str, req: WatermarkRequest):
+    return await _run(
+        session_id,
+        lambda doc: engine.add_watermark(doc, req.text, req.opacity, req.font_size, req.hex_color, req.angle),
+        "Watermark applied.",
+    )
+
+
+@router.post("/extract/{session_id}")
+async def extract(session_id: str, req: ExtractPagesRequest):
+    """Return a NEW PDF containing only the requested pages (does not mutate the session)."""
+    get_session_or_404(session_id)
+    try:
+        path = await run_in_threadpool(session_manager.extract_pages_path, session_id, req.page_numbers)
+    except (IndexError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename="extracted.pdf",
+        headers={"Cache-Control": "no-store"},
     )
 
 

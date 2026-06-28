@@ -47,6 +47,8 @@ interface PropertiesPanelProps {
   onInsertBlank: () => void;
   onInsertPdf: () => void;
   onNumberPages: () => void;
+  onWatermark: () => void;
+  onExtract: () => void;
   strokeColor: string;
   onChangeStrokeColor: (color: string) => void;
   fillColor: string;
@@ -78,6 +80,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   onInsertBlank,
   onInsertPdf,
   onNumberPages,
+  onWatermark,
+  onExtract,
   strokeColor,
   onChangeStrokeColor,
   fillColor,
@@ -414,6 +418,18 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             <span>Insert Image</span>
           </button>
         )}
+      </section>
+
+      <section className="prop-section">
+        <header className="prop-title">DOCUMENT</header>
+        <div className="panel-stack">
+          <button className="block-save-btn secondary" onClick={onWatermark} disabled={!canEdit || isLoading}>
+            Add Watermark
+          </button>
+          <button className="block-save-btn secondary" onClick={onExtract} disabled={!canEdit || isLoading}>
+            Extract Pages
+          </button>
+        </div>
       </section>
 
       <section className="prop-section">

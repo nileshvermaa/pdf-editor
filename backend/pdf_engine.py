@@ -443,6 +443,52 @@ def insert_blank_page(
     doc.new_page(pno=after_page, width=w, height=h)
 
 
+def extract_pages(doc: "fitz.Document", page_numbers: List[int]) -> None:
+    """Reduce ``doc`` to only ``page_numbers`` (1-based, in the given order).
+
+    Intended for a throwaway copy of the document — never the session's live
+    doc, since this mutates it in place.
+    """
+    if not page_numbers:
+        raise ValueError("Select at least one page to extract")
+    _validate_pages(doc, page_numbers)
+    doc.select([p - 1 for p in page_numbers])
+
+
+def add_watermark(
+    doc: "fitz.Document",
+    text: str,
+    opacity: float = 0.18,
+    font_size: float = 48.0,
+    hex_color: str = "#888888",
+    angle: int = 45,
+) -> None:
+    """Stamp a centered, rotated, semi-transparent watermark on every page."""
+    if not text.strip():
+        raise ValueError("Watermark text cannot be empty")
+    opacity = max(0.0, min(1.0, opacity))
+    color = hex_to_rgb01(hex_color)
+    for i in range(doc.page_count):
+        page = doc[i]
+        rect = page.rect
+        pivot = fitz.Point(rect.width / 2, rect.height / 2)
+        mat = fitz.Matrix(1, 0, 0, 1, 0, 0)
+        mat.prerotate(angle)
+        text_w = fitz.get_text_length(text, fontname="helv", fontsize=font_size)
+        # Start point so the (unrotated) text is centered; morph rotates it about
+        # the page center.
+        point = fitz.Point(pivot.x - text_w / 2, pivot.y + font_size / 4)
+        page.insert_text(
+            point,
+            text,
+            fontsize=font_size,
+            fontname="helv",
+            color=color,
+            fill_opacity=opacity,
+            morph=(pivot, mat),
+        )
+
+
 _NUMBER_POSITIONS = {"top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"}
 
 

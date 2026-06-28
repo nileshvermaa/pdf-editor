@@ -212,6 +212,43 @@ def test_add_page_numbers_rejects_bad_position():
     doc.close()
 
 
+def test_extract_pages_keeps_only_selected():
+    doc = fitz.open()
+    for _ in range(5):
+        doc.new_page(width=200, height=200)
+    engine.extract_pages(doc, [2, 4])
+    assert doc.page_count == 2
+    doc.close()
+
+
+def test_extract_pages_validates():
+    doc = fitz.open()
+    doc.new_page()
+    with pytest.raises(ValueError):
+        engine.extract_pages(doc, [])
+    with pytest.raises(IndexError):
+        engine.extract_pages(doc, [9])
+    doc.close()
+
+
+def test_watermark_applies_to_every_page():
+    doc = fitz.open()
+    for _ in range(2):
+        doc.new_page(width=400, height=400)
+    engine.add_watermark(doc, "CONFIDENTIAL", opacity=0.2)
+    assert "CONFIDENTIAL" in doc[0].get_text()
+    assert "CONFIDENTIAL" in doc[1].get_text()
+    doc.close()
+
+
+def test_watermark_rejects_empty():
+    doc = fitz.open()
+    doc.new_page()
+    with pytest.raises(ValueError):
+        engine.add_watermark(doc, "   ")
+    doc.close()
+
+
 def test_insert_ocr_blocks_adds_text():
     doc = fitz.open()
     doc.new_page(width=300, height=200)

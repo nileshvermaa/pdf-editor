@@ -274,6 +274,25 @@ class SessionManager:
             self._commit_version(sess, new_path, new_objects_path)
             return sess
 
+    def extract_pages_path(self, session_id: str, page_numbers: List[int]) -> str:
+        """Save a NEW PDF containing only ``page_numbers`` and return its path.
+
+        Operates on a throwaway open of the current version — the session's own
+        document and history are untouched.
+        """
+        from pdf_engine import extract_pages as _extract
+
+        sess = self.get(session_id)
+        with sess.lock:
+            doc = fitz.open(sess.current_path)
+            try:
+                _extract(doc, page_numbers)
+                out = os.path.join(sess.directory, EXPORTS_DIR, f"extract-{sess.index:04d}.pdf")
+                doc.save(out, garbage=4, deflate=True)
+                return out
+            finally:
+                doc.close()
+
     def export_path(self, session_id: str) -> str:
         sess = self.get(session_id)
         with sess.lock:

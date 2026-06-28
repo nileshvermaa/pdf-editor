@@ -167,6 +167,16 @@ export const api = {
     post(`/pages/reorder/${sid}`, { order }).then(parse<EditResponse>),
   numberPages: (sid: string, opts: { position?: string; fmt?: string; start?: number } = {}) =>
     post(`/pages/number/${sid}`, opts).then(parse<EditResponse>),
+  watermark: (sid: string, body: { text: string; opacity?: number; font_size?: number; hex_color?: string; angle?: number }) =>
+    post(`/pages/watermark/${sid}`, body).then(parse<EditResponse>),
+  async extractPages(sid: string, pageNumbers: number[]): Promise<Blob> {
+    const res = await post(`/pages/extract/${sid}`, { page_numbers: pageNumbers });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data as any).detail || `Extract failed (${res.status})`);
+    }
+    return res.blob();
+  },
   async mergePdf(sid: string, file: File, afterPage?: number) {
     const fd = new FormData();
     fd.append('file', file);
