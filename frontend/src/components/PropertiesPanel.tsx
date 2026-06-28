@@ -28,6 +28,7 @@ interface SelectedBlock {
 interface PropertiesPanelProps {
   selectedBlock: SelectedBlock | null;
   selectedObject: EditorObject | null;
+  selectionCount: number;
   activeTool: ToolKey;
   activeShape: ShapeObjectType;
   onChangeActiveShape: (shape: ShapeObjectType) => void;
@@ -61,6 +62,7 @@ interface PropertiesPanelProps {
 export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   selectedBlock,
   selectedObject,
+  selectionCount,
   activeTool,
   activeShape,
   onChangeActiveShape,
@@ -153,9 +155,10 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
   const selectionLabel = useMemo(() => {
     if (selectedObject) return selectedObject.type.toUpperCase();
+    if (selectionCount > 1) return `${selectionCount} SELECTED`;
     if (selectedBlock) return 'TEXT BLOCK';
     return activeTool === 'draw' ? 'DRAW' : 'TEXT PROPERTIES';
-  }, [activeTool, selectedBlock, selectedObject]);
+  }, [activeTool, selectedBlock, selectedObject, selectionCount]);
 
   const saveObject = () => {
     if (!selectedObject) return;
@@ -300,6 +303,16 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
             <button className="block-save-btn" onClick={saveObject} disabled={!canEdit || isLoading}>
               {isLoading ? 'Applying...' : 'Apply Object'}
+            </button>
+          </div>
+        ) : selectionCount > 1 ? (
+          <div className="panel-stack">
+            <div className="prop-note">
+              {selectionCount} objects selected. Drag to move them together, use arrow keys to nudge, or delete them all.
+            </div>
+            <button className="block-save-btn secondary" onClick={onDeleteObject} disabled={!canEdit || isLoading}>
+              <Trash2 size={14} strokeWidth={1.5} />
+              <span>Delete {selectionCount} objects</span>
             </button>
           </div>
         ) : activeTool === 'text' && selectedBlock ? (

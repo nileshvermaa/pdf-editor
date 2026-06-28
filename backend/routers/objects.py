@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse
 
 from deps import build_edit_response, get_session_or_404, session_manager
 from schemas import (
+    BatchDeleteRequest,
+    BatchMoveRequest,
     EditResponse,
     EditorObjectCreateRequest,
     EditorObjectUpdateRequest,
@@ -114,6 +116,48 @@ async def delete_object(session_id: str, object_id: str):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return await run_in_threadpool(build_edit_response, session, f"Deleted {deleted['type']}.")
+
+
+@router.post("/objects/{session_id}/batch-move", response_model=EditResponse)
+async def batch_move(session_id: str, req: BatchMoveRequest):
+    get_session_or_404(session_id)
+
+    def _mutate(objects: List[Dict[str, Any]]):
+        index = {obj["id"]: i for i, obj in enumerate(objects)}
+        for mv in req.moves:
+            if mv.id not in index:
+                raise ValueError(f"Object not found: {mv.id}")
+            obj = objects[index[mv.id]]
+            allow_line = obj.get("type") == "shape" and obj.get("shape_type") in {"line", "arrow"}
+            _validate_object_bounds(session_id, int(obj["page_number"]), mv.bbox, allow_line=allow_line)
+            obj["bbox"] = [float(v) for v in mv.bbox]
+        return len(req.moves)
+
+    try:
+        session, count = await run_in_threadpool(session_manager.mutate_objects, session_id, _mutate)
+    except (IndexError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await run_in_threadpool(build_edit_response, session, f"Moved {count} object(s).")
+
+
+@router.post("/objects/{session_id}/batch-delete", response_model=EditResponse)
+async def batch_delete(session_id: str, req: BatchDeleteRequest):
+    get_session_or_404(session_id)
+
+    def _mutate(objects: List[Dict[str, Any]]):
+        wanted = set(req.ids)
+        kept = [obj for obj in objects if obj["id"] not in wanted]
+        removed = len(objects) - len(kept)
+        if removed == 0:
+            raise ValueError("No matching objects to delete")
+        objects[:] = kept
+        return removed
+
+    try:
+        session, count = await run_in_threadpool(session_manager.mutate_objects, session_id, _mutate)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await run_in_threadpool(build_edit_response, session, f"Deleted {count} object(s).")
 
 
 @router.post("/objects/{session_id}/reorder", response_model=EditResponse)

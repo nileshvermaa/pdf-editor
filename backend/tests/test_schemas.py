@@ -8,7 +8,13 @@ from pydantic import ValidationError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from schemas import DrawShapeRequest, EditorObjectCreateRequest, PersistOCRRequest  # noqa: E402
+from schemas import (  # noqa: E402
+    BatchDeleteRequest,
+    BatchMoveRequest,
+    DrawShapeRequest,
+    EditorObjectCreateRequest,
+    PersistOCRRequest,
+)
 
 
 def test_draw_shape_bbox_must_be_valid_rect():
@@ -59,3 +65,18 @@ def test_object_create_validates_line_bbox_after_shape_type():
 def test_persist_ocr_requires_non_empty_blocks():
     with pytest.raises(ValidationError):
         PersistOCRRequest(page_number=1, blocks=[])
+
+
+def test_batch_move_requires_four_coord_bbox_and_nonempty():
+    ok = BatchMoveRequest(moves=[{"id": "a", "bbox": [1, 2, 3, 4]}])
+    assert ok.moves[0].id == "a"
+    with pytest.raises(ValidationError):
+        BatchMoveRequest(moves=[])
+    with pytest.raises(ValidationError):
+        BatchMoveRequest(moves=[{"id": "a", "bbox": [1, 2, 3]}])
+
+
+def test_batch_delete_requires_ids():
+    assert BatchDeleteRequest(ids=["a", "b"]).ids == ["a", "b"]
+    with pytest.raises(ValidationError):
+        BatchDeleteRequest(ids=[])

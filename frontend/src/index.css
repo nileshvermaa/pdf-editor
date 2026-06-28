@@ -739,6 +739,15 @@ button {
   overflow: visible;
 }
 
+/* Rubber-band selection rectangle. */
+.marquee-rect {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(255, 68, 0, 0.08);
+  pointer-events: none;
+  z-index: 60;
+}
+
 .scanned-img-highlight {
   position: absolute;
   border: 1.5px dashed var(--accent);

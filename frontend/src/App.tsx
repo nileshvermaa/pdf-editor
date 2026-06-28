@@ -119,7 +119,10 @@ function App() {
   const [history, setHistory] = useState<HistoryState | null>(null);
   const [activePage, setActivePage] = useState<number>(1);
   const [selectedBlock, setSelectedBlock] = useState<SelectedBlock | null>(null);
-  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [selectedObjectIds, setSelectedObjectIds] = useState<string[]>([]);
+  // The single "primary" selection drives the inspector, resize handles,
+  // inline edit, duplicate and nudge; >1 selected enables group move/delete.
+  const selectedObjectId = selectedObjectIds.length === 1 ? selectedObjectIds[0] : null;
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [toast, setToast] = useState<Toast>({ text: '', type: null });
   // Default to the cursor (like Figma) — a 'text' default makes every stray
@@ -138,7 +141,7 @@ function App() {
   const stageRef = useRef<HTMLElement | null>(null);
   // Accumulates arrow-key nudges so the whole gesture commits as ONE history
   // entry (debounced), instead of one version per keypress.
-  const nudgeRef = useRef<{ id: string; bbox: [number, number, number, number]; timer: number } | null>(null);
+  const nudgeRef = useRef<{ moves: Record<string, [number, number, number, number]>; timer: number } | null>(null);
 
   const zoomIn = useCallback(() => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 1e-3) ?? z), []);
   const zoomOut = useCallback(() => setZoom((z) => [...ZOOM_LEVELS].reverse().find((l) => l < z - 1e-3) ?? z), []);
@@ -198,15 +201,15 @@ function App() {
       if (options?.clearBlock !== false) {
         setSelectedBlock(null);
       }
-      setSelectedObjectId((current) => {
+      setSelectedObjectIds((current) => {
         if (options && 'selectObjectId' in options) {
-          return options.selectObjectId ?? null;
+          return options.selectObjectId ? [options.selectObjectId] : [];
         }
-        if (options?.keepObjectSelection && current) {
-          const exists = data.pages.some((page) => page.objects?.some((obj) => obj.id === current));
-          return exists ? current : null;
+        if (options?.keepObjectSelection && current.length) {
+          // Keep only ids that still exist after the edit.
+          return current.filter((id) => data.pages.some((page) => page.objects?.some((obj) => obj.id === id)));
         }
-        return null;
+        return [];
       });
     },
     []
@@ -272,7 +275,7 @@ function App() {
       setHistory(data.history);
       setActivePage(1);
       setSelectedBlock(null);
-      setSelectedObjectId(null);
+      setSelectedObjectIds([]);
       setActiveTool('cursor');
       setZoom(DEFAULT_ZOOM);
       showToast(`${data.filename} loaded`, 'success');
@@ -511,38 +514,45 @@ function App() {
     const n = nudgeRef.current;
     nudgeRef.current = null;
     if (!n || !sid) return;
+    const moves = Object.entries(n.moves).map(([id, bbox]) => ({ id, bbox }));
+    if (!moves.length) return;
     api
-      .updateObject(sid, n.id, { bbox: n.bbox })
-      .then((data) => syncEdit(data, { keepObjectSelection: true, selectObjectId: n.id, clearBlock: true }))
+      .batchMove(sid, moves)
+      .then((data) => syncEdit(data, { keepObjectSelection: true, clearBlock: true }))
       .catch((err: any) => showToast(err.message || 'Move failed', 'error'));
   }, [sid, syncEdit, showToast]);
 
   const nudgeSelectedObject = useCallback(
     (dx: number, dy: number) => {
-      if (!sid || !selectedObject) return;
-      const page = session?.pages.find((p) => p.number === selectedObject.page_number);
-      const pw = page?.width ?? 9999;
-      const ph = page?.height ?? 9999;
-      const base =
-        nudgeRef.current?.id === selectedObject.id ? nudgeRef.current.bbox : (selectedObject.bbox as [number, number, number, number]);
-      const next = shiftBBoxClamped(base, dx, dy, pw, ph);
-      // Optimistic local move for instant feedback.
+      if (!sid || !session || !selectedObjectIds.length) return;
+      // Accumulate in nudgeRef so rapid presses compound correctly even if the
+      // optimistic session update hasn't re-rendered yet.
+      const pending = nudgeRef.current?.moves ?? {};
+      const nextMoves: Record<string, [number, number, number, number]> = { ...pending };
+      for (const pg of session.pages) {
+        for (const o of pg.objects ?? []) {
+          if (!selectedObjectIds.includes(o.id)) continue;
+          const base = pending[o.id] ?? (o.bbox as [number, number, number, number]);
+          nextMoves[o.id] = shiftBBoxClamped(base, dx, dy, pg.width, pg.height);
+        }
+      }
+      // Optimistic move for instant feedback (idempotent — safe under StrictMode).
       setSession((prev) =>
         prev
           ? {
               ...prev,
               pages: prev.pages.map((pg) => ({
                 ...pg,
-                objects: pg.objects?.map((o) => (o.id === selectedObject.id ? { ...o, bbox: next } : o)),
+                objects: pg.objects?.map((o) => (nextMoves[o.id] ? { ...o, bbox: nextMoves[o.id] } : o)),
               })),
             }
           : prev
       );
       if (nudgeRef.current?.timer) window.clearTimeout(nudgeRef.current.timer);
       const timer = window.setTimeout(commitNudge, 400);
-      nudgeRef.current = { id: selectedObject.id, bbox: next, timer };
+      nudgeRef.current = { moves: nextMoves, timer };
     },
-    [sid, selectedObject, session, commitNudge]
+    [sid, session, selectedObjectIds, commitNudge]
   );
 
   const handleCreateObject = async (
@@ -607,8 +617,13 @@ function App() {
   };
 
   const handleDeleteObject = () => {
-    if (!sid || !selectedObjectId) return;
-    return run(() => api.deleteObject(sid, selectedObjectId), 'Object deleted', { selectObjectId: null, clearBlock: true });
+    if (!sid || !selectedObjectIds.length) return;
+    if (selectedObjectIds.length === 1) {
+      return run(() => api.deleteObject(sid, selectedObjectIds[0]), 'Object deleted', { selectObjectId: null, clearBlock: true });
+    }
+    // Group delete in one undo step.
+    const ids = selectedObjectIds;
+    return run(() => api.batchDelete(sid, ids), `Deleted ${ids.length} objects`, { selectObjectId: null, clearBlock: true });
   };
 
   const handleReorderObject = (direction: 'forward' | 'backward') => {
@@ -638,18 +653,34 @@ function App() {
 
   const handleSelectBlock = (block: SelectedBlock | null) => {
     setSelectedBlock(block);
-    setSelectedObjectId(null);
+    setSelectedObjectIds([]);
     if (block) {
       setActiveTool('text');
     }
   };
 
-  const handleSelectObject = (objectId: string | null) => {
-    setSelectedObjectId(objectId);
-    if (objectId) {
-      setSelectedBlock(null);
-      setActiveTool('cursor');
+  const handleSelectObject = (objectId: string | null, additive = false) => {
+    if (!objectId) {
+      setSelectedObjectIds([]);
+      return;
     }
+    setSelectedBlock(null);
+    setActiveTool('cursor');
+    setSelectedObjectIds((cur) =>
+      additive ? (cur.includes(objectId) ? cur.filter((i) => i !== objectId) : [...cur, objectId]) : [objectId]
+    );
+  };
+
+  // Marquee result: replace the selection with whatever the rubber-band caught.
+  const handleSetSelection = (ids: string[]) => {
+    setSelectedBlock(null);
+    setSelectedObjectIds(ids);
+  };
+
+  // Group move: one batched, single-undo commit for all dragged objects.
+  const handleMoveObjects = (moves: Array<{ id: string; bbox: [number, number, number, number] }>) => {
+    if (!sid || !moves.length) return;
+    run(() => api.batchMove(sid, moves), 'Moved objects', { keepObjectSelection: true, clearBlock: true });
   };
 
   // Keyboard shortcuts (the toolbar tooltips advertise V / T):
@@ -697,17 +728,17 @@ function App() {
 
       if (key === 'escape') {
         setSelectedBlock(null);
-        setSelectedObjectId(null);
+        setSelectedObjectIds([]);
         setActiveTool('cursor');
         return;
       }
-      if ((key === 'delete' || key === 'backspace') && selectedObjectId && !isLoading) {
+      if ((key === 'delete' || key === 'backspace') && selectedObjectIds.length && !isLoading) {
         e.preventDefault();
         handleDeleteObject();
         return;
       }
-      // Arrow-key nudge of the selected object (Shift = 10pt step).
-      if (selectedObjectId && !isLoading) {
+      // Arrow-key nudge of the selected object(s) (Shift = 10pt step).
+      if (selectedObjectIds.length && !isLoading) {
         const step = e.shiftKey ? 10 : 1;
         const delta: Record<string, [number, number]> = {
           arrowleft: [-step, 0],
@@ -728,7 +759,7 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sid, history, isLoading, selectedObjectId, session, zoomIn, zoomOut, resetZoom, nudgeSelectedObject]);
+  }, [sid, history, isLoading, selectedObjectIds, session, zoomIn, zoomOut, resetZoom, nudgeSelectedObject]);
 
   return (
     <div className="app-shell">
@@ -841,13 +872,15 @@ function App() {
               onSelectBlock={handleSelectBlock}
               onOCRComplete={handleOCRComplete}
               selectedBlock={selectedBlock}
-              selectedObjectId={selectedObjectId}
+              selectedObjectIds={selectedObjectIds}
               onSelectObject={handleSelectObject}
+              onSetSelection={handleSetSelection}
               activeTool={activeTool}
               activeShape={activeTool === 'draw' ? activeShape : null}
               onDrawShape={handleDrawShape}
               onCreateObject={handleCreateObject}
               onUpdateObject={handleUpdateObject}
+              onMoveObjects={handleMoveObjects}
               assetUrlFor={(assetId: string) => api.assetUrl(session.session_id, assetId)}
             />
           ) : (
@@ -874,6 +907,7 @@ function App() {
         <PropertiesPanel
           selectedBlock={selectedBlock}
           selectedObject={selectedObject}
+          selectionCount={selectedObjectIds.length}
           activeTool={activeTool}
           activeShape={activeShape}
           onChangeActiveShape={setActiveShape}

@@ -307,6 +307,21 @@ class ObjectReorderRequest(BaseModel):
     object_ids: List[str] = Field(min_length=1)
 
 
+class ObjectMove(BaseModel):
+    id: str = Field(min_length=1)
+    bbox: List[float] = Field(min_length=4, max_length=4)
+
+
+class BatchMoveRequest(BaseModel):
+    """Translate several objects at once so a group drag/nudge is one history entry."""
+    moves: List[ObjectMove] = Field(min_length=1)
+
+
+class BatchDeleteRequest(BaseModel):
+    """Delete several objects at once so a group delete is one history entry."""
+    ids: List[str] = Field(min_length=1)
+
+
 class EditResponse(BaseModel):
     success: bool = True
     message: str = ""

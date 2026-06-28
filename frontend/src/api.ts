@@ -195,6 +195,10 @@ export const api = {
     fetch(`${API_BASE}/objects/${sid}/${objectId}`, { method: 'DELETE' }).then(parse<EditResponse>),
   reorderObjects: (sid: string, objectIds: string[]) =>
     post(`/objects/${sid}/reorder`, { object_ids: objectIds }).then(parse<EditResponse>),
+  batchMove: (sid: string, moves: Array<{ id: string; bbox: [number, number, number, number] }>) =>
+    post(`/objects/${sid}/batch-move`, { moves }).then(parse<EditResponse>),
+  batchDelete: (sid: string, ids: string[]) =>
+    post(`/objects/${sid}/batch-delete`, { ids }).then(parse<EditResponse>),
 
   drawShape: (sid: string, body: object) => post(`/draw-shape/${sid}`, body).then(parse<EditResponse>),
   addHighlight: (sid: string, body: object) => post(`/add-highlight/${sid}`, body).then(parse<EditResponse>),

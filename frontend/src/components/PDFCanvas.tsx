@@ -17,25 +17,6 @@ const clampRectToPage = (
   return [x0, y0, x0 + w, y0 + h];
 };
 
-/** Clamp a drag translation so the moved bbox stays on the page. */
-const clampDelta = (
-  origin: [number, number, number, number],
-  dx: number,
-  dy: number,
-  pageWidth: number,
-  pageHeight: number
-): { dx: number; dy: number } => {
-  // Lines keep direction in their bbox, so use min/max of each pair.
-  const loX = Math.min(origin[0], origin[2]);
-  const hiX = Math.max(origin[0], origin[2]);
-  const loY = Math.min(origin[1], origin[3]);
-  const hiY = Math.max(origin[1], origin[3]);
-  return {
-    dx: Math.min(Math.max(dx, -loX), Math.max(-loX, pageWidth - hiX)),
-    dy: Math.min(Math.max(dy, -loY), Math.max(-loY, pageHeight - hiY)),
-  };
-};
-
 const MIN_OBJ_SIZE = 8; // PDF points — smallest a box may be resized to
 const clampNum = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
 
@@ -112,13 +93,15 @@ interface PDFCanvasProps {
   onSelectBlock: (block: SelectedBlock | null) => void;
   onOCRComplete: (pageNum: number, ocrBlocks: OCRBlockPayload[]) => Promise<void> | void;
   selectedBlock: SelectedBlock | null;
-  selectedObjectId: string | null;
-  onSelectObject: (objectId: string | null) => void;
+  selectedObjectIds: string[];
+  onSelectObject: (objectId: string | null, additive?: boolean) => void;
+  onSetSelection: (ids: string[]) => void;
   activeTool: ToolKey;
   activeShape?: ShapeObjectType | null;
   onDrawShape?: (bbox: number[]) => void;
   onCreateObject: (tool: 'text' | 'comment' | 'signature', bbox: [number, number, number, number]) => Promise<void> | void;
   onUpdateObject: (objectId: string, changes: UpdateObjectPayload) => void;
+  onMoveObjects: (moves: Array<{ id: string; bbox: [number, number, number, number] }>) => void;
   assetUrlFor: (assetId: string) => string;
 }
 
@@ -128,10 +111,16 @@ interface Point {
 }
 
 interface DragState {
-  id: string;
+  // All objects moved together (group drag); a single drag is just one id.
+  ids: string[];
+  origins: Record<string, [number, number, number, number]>;
   start: Point;
-  origin: [number, number, number, number];
   delta: Point;
+}
+
+interface MarqueeState {
+  start: Point;
+  current: Point;
 }
 
 interface ResizeState {
@@ -151,17 +140,22 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   onSelectBlock,
   onOCRComplete,
   selectedBlock,
-  selectedObjectId,
+  selectedObjectIds,
   onSelectObject,
+  onSetSelection,
   activeTool,
   activeShape,
   onDrawShape,
   onCreateObject,
   onUpdateObject,
+  onMoveObjects,
   assetUrlFor,
 }) => {
   // Alias so every coordinate conversion below reads naturally.
   const SCALE = scale;
+  // Resize handles + inline edit only apply to a lone selection.
+  const primaryId = selectedObjectIds.length === 1 ? selectedObjectIds[0] : null;
+  const isSelected = (id: string) => selectedObjectIds.includes(id);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
   // True once any frame has been painted: re-renders (zoom, page switch,
@@ -181,6 +175,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   const [currentPoint, setCurrentPoint] = useState<Point | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [resizeState, setResizeState] = useState<ResizeState | null>(null);
+  const [marquee, setMarquee] = useState<MarqueeState | null>(null);
   // Inline (on-canvas) text editing: the object id being edited + its draft text.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
@@ -278,25 +273,18 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     };
 
     const handlePointerUp = () => {
-      // Read the latest drag state from the effect closure (the effect
-      // re-subscribes on every delta change). Side effects like
-      // onUpdateObject must NOT run inside a setState updater — React
-      // warns "cannot update App while rendering PDFCanvas".
+      // Read the latest drag state from the effect closure (re-subscribes on
+      // every delta change). Side effects must NOT run inside a setState updater.
       const current = dragState;
       setDragState(null);
       if (!current) return;
-      const { dx, dy } = clampDelta(
-        current.origin,
-        current.delta.x / SCALE,
-        current.delta.y / SCALE,
-        page.width,
-        page.height
-      );
+      const { dx, dy } = groupClampedDelta(current);
       if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
-        const [x0, y0, x1, y1] = current.origin;
-        onUpdateObject(current.id, {
-          bbox: [x0 + dx, y0 + dy, x1 + dx, y1 + dy],
+        const moves = current.ids.map((id) => {
+          const [x0, y0, x1, y1] = current.origins[id];
+          return { id, bbox: [x0 + dx, y0 + dy, x1 + dx, y1 + dy] as [number, number, number, number] };
         });
+        onMoveObjects(moves);
       }
     };
 
@@ -306,7 +294,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
     };
-  }, [dragState, onUpdateObject, page.width, page.height, scale]);
+  }, [dragState, onMoveObjects, page.width, page.height, scale]);
 
   // Resize via the selection handles. Mirrors the drag effect: track the
   // pointer on window, preview live, commit the new bbox on release.
@@ -432,6 +420,17 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       return;
     }
 
+    // Empty-canvas press in cursor mode starts a marquee (rubber-band) select.
+    if (activeTool === 'cursor') {
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // capture is an enhancement
+      }
+      setMarquee({ start: getPointerPoint(event), current: getPointerPoint(event) });
+      return;
+    }
+
     onSelectObject(null);
     onSelectBlock(null);
   };
@@ -439,12 +438,45 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   const handleLayerPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     if (activeTool === 'draw' && activeShape) {
       continueShapeDraw(event);
+      return;
+    }
+    if (marquee) {
+      // Read the point BEFORE setState — React nulls event.currentTarget by the
+      // time a setState updater runs, which would crash getPointerPoint.
+      const point = getPointerPoint(event);
+      setMarquee((m) => (m ? { ...m, current: point } : m));
     }
   };
 
   const handleLayerPointerUp = () => {
     if (activeTool === 'draw' && activeShape) {
       finishShapeDraw();
+      return;
+    }
+    if (marquee) {
+      const x0 = Math.min(marquee.start.x, marquee.current.x) / SCALE;
+      const y0 = Math.min(marquee.start.y, marquee.current.y) / SCALE;
+      const x1 = Math.max(marquee.start.x, marquee.current.x) / SCALE;
+      const y1 = Math.max(marquee.start.y, marquee.current.y) / SCALE;
+      setMarquee(null);
+      // A tiny rubber-band is really just a click on empty space → deselect.
+      if ((x1 - x0) * SCALE < 4 && (y1 - y0) * SCALE < 4) {
+        onSelectObject(null);
+        onSelectBlock(null);
+        return;
+      }
+      // Select every object whose envelope intersects the marquee.
+      const hits = objects
+        .filter((o) => {
+          const [ox0, oy0, ox1, oy1] = o.bbox;
+          const minX = Math.min(ox0, ox1);
+          const maxX = Math.max(ox0, ox1);
+          const minY = Math.min(oy0, oy1);
+          const maxY = Math.max(oy0, oy1);
+          return maxX >= x0 && minX <= x1 && maxY >= y0 && minY <= y1;
+        })
+        .map((o) => o.id);
+      onSetSelection(hits);
     }
   };
 
@@ -467,14 +499,45 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   const handleObjectPointerDown = (event: React.PointerEvent<HTMLDivElement>, object: EditorObject) => {
     event.stopPropagation();
     if (editingId === object.id) return; // let the inline editor own the pointer
-    onSelectObject(object.id);
+
+    const additive = event.shiftKey || event.metaKey || event.ctrlKey;
+    if (additive) {
+      onSelectObject(object.id, true); // toggle into/out of the selection, no drag
+      return;
+    }
+
+    // Dragging a member of a multi-selection moves the whole group; otherwise
+    // select just this object and drag it alone.
+    const dragIds = isSelected(object.id) && selectedObjectIds.length > 1 ? selectedObjectIds : [object.id];
+    if (!(isSelected(object.id) && selectedObjectIds.length > 1)) {
+      onSelectObject(object.id, false);
+    }
     if (activeTool !== 'cursor' || object.locked) return;
-    setDragState({
-      id: object.id,
-      start: { x: event.clientX, y: event.clientY },
-      origin: [...object.bbox] as [number, number, number, number],
-      delta: { x: 0, y: 0 },
-    });
+
+    const origins: Record<string, [number, number, number, number]> = {};
+    for (const o of objects) {
+      if (dragIds.includes(o.id)) origins[o.id] = [...o.bbox] as [number, number, number, number];
+    }
+    setDragState({ ids: dragIds, origins, start: { x: event.clientX, y: event.clientY }, delta: { x: 0, y: 0 } });
+  };
+
+  // Clamp a group drag so the union envelope of all dragged objects stays on-page.
+  const groupClampedDelta = (state: DragState): { dx: number; dy: number } => {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const id of state.ids) {
+      const b = state.origins[id];
+      if (!b) continue;
+      minX = Math.min(minX, b[0], b[2]);
+      maxX = Math.max(maxX, b[0], b[2]);
+      minY = Math.min(minY, b[1], b[3]);
+      maxY = Math.max(maxY, b[1], b[3]);
+    }
+    const dx = Math.min(Math.max(state.delta.x / SCALE, -minX), page.width - maxX);
+    const dy = Math.min(Math.max(state.delta.y / SCALE, -minY), page.height - maxY);
+    return { dx, dy };
   };
 
   const handleResizeStart = (
@@ -507,20 +570,12 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         ? resizeLineBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height)
         : resizeBoxBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height);
     }
-    if (dragState?.id !== object.id) return object.bbox;
-    const { dx, dy } = clampDelta(
-      object.bbox,
-      dragState.delta.x / SCALE,
-      dragState.delta.y / SCALE,
-      page.width,
-      page.height
-    );
-    return [
-      object.bbox[0] + dx,
-      object.bbox[1] + dy,
-      object.bbox[2] + dx,
-      object.bbox[3] + dy,
-    ];
+    if (dragState && dragState.ids.includes(object.id)) {
+      const { dx, dy } = groupClampedDelta(dragState);
+      const origin = dragState.origins[object.id];
+      return [origin[0] + dx, origin[1] + dy, origin[2] + dx, origin[3] + dy];
+    }
+    return object.bbox;
   };
 
   // Interactive resize handles. Boxes get the 8 compass handles; lines/arrows
@@ -567,7 +622,8 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       zIndex: (object.z_index ?? 0) + 10,
       opacity: object.opacity ?? 1,
     };
-    const selected = selectedObjectId === object.id;
+    const selected = isSelected(object.id);
+    const showHandles = primaryId === object.id;
 
     if (object.type === 'image') {
       return (
@@ -578,7 +634,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
           onPointerDown={(event) => handleObjectPointerDown(event, object)}
         >
           <img src={assetUrlFor(object.asset_id)} alt="" draggable={false} />
-          {selected && renderBoxHandles(object)}
+          {showHandles && renderBoxHandles(object)}
         </div>
       );
     }
@@ -613,7 +669,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
                 markerEnd={object.shape_type === 'arrow' ? `url(#arrow-${object.id})` : undefined}
               />
             </svg>
-            {selected && renderLineHandles(object, sx, sy, ex, ey)}
+            {showHandles && renderLineHandles(object, sx, sy, ex, ey)}
           </div>
         );
       }
@@ -630,7 +686,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
           }}
           onPointerDown={(event) => handleObjectPointerDown(event, object)}
         >
-          {selected && renderBoxHandles(object)}
+          {showHandles && renderBoxHandles(object)}
         </div>
       );
     }
@@ -687,7 +743,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         ) : (
           <span>{object.text}</span>
         )}
-        {selected && !editing && renderBoxHandles(object)}
+        {showHandles && !editing && renderBoxHandles(object)}
       </div>
     );
   };
@@ -783,6 +839,18 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         <div className="object-overlay-layer">
           {objects.map((object) => renderObject(object))}
         </div>
+
+        {marquee && (
+          <div
+            className="marquee-rect"
+            style={{
+              left: Math.min(marquee.start.x, marquee.current.x),
+              top: Math.min(marquee.start.y, marquee.current.y),
+              width: Math.abs(marquee.current.x - marquee.start.x),
+              height: Math.abs(marquee.current.y - marquee.start.y),
+            }}
+          />
+        )}
 
         {isDrawing && startPoint && currentPoint && (
           <div
