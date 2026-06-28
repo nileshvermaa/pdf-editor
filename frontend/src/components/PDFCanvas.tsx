@@ -278,7 +278,7 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
       const current = dragState;
       setDragState(null);
       if (!current) return;
-      const { dx, dy } = groupClampedDelta(current);
+      const { dx, dy } = snapDrag(current);
       if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
         const moves = current.ids.map((id) => {
           const [x0, y0, x1, y1] = current.origins[id];
@@ -522,7 +522,9 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
   };
 
   // Clamp a group drag so the union envelope of all dragged objects stays on-page.
-  const groupClampedDelta = (state: DragState): { dx: number; dy: number } => {
+  const groupClampedDelta = (
+    state: DragState
+  ): { dx: number; dy: number; minX: number; minY: number; maxX: number; maxY: number } => {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -537,8 +539,51 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
     }
     const dx = Math.min(Math.max(state.delta.x / SCALE, -minX), page.width - maxX);
     const dy = Math.min(Math.max(state.delta.y / SCALE, -minY), page.height - maxY);
-    return { dx, dy };
+    return { dx, dy, minX, minY, maxX, maxY };
   };
+
+  // Snap the dragged group's edges/centers to other objects and page guides.
+  const snapDrag = (state: DragState): { dx: number; dy: number; guideX: number | null; guideY: number | null } => {
+    const { dx: cdx, dy: cdy, minX, minY, maxX, maxY } = groupClampedDelta(state);
+    const thresh = 6 / SCALE; // 6 screen px
+    const dragged = new Set(state.ids);
+
+    // Candidate snap positions: page edges + center, then every static object's
+    // left/centre/right (vertical) and top/middle/bottom (horizontal).
+    const vCands = [0, page.width / 2, page.width];
+    const hCands = [0, page.height / 2, page.height];
+    for (const o of objects) {
+      if (dragged.has(o.id)) continue;
+      const [x0, y0, x1, y1] = o.bbox;
+      vCands.push(Math.min(x0, x1), (x0 + x1) / 2, Math.max(x0, x1));
+      hCands.push(Math.min(y0, y1), (y0 + y1) / 2, Math.max(y0, y1));
+    }
+
+    const best = (edges: number[], cands: number[]) => {
+      let snap = 0;
+      let guide: number | null = null;
+      let bestDiff = thresh;
+      for (const edge of edges) {
+        for (const c of cands) {
+          const d = c - edge;
+          if (Math.abs(d) <= bestDiff) {
+            bestDiff = Math.abs(d);
+            snap = d;
+            guide = c;
+          }
+        }
+      }
+      return { snap, guide };
+    };
+
+    const x = best([minX + cdx, (minX + maxX) / 2 + cdx, maxX + cdx], vCands);
+    const y = best([minY + cdy, (minY + maxY) / 2 + cdy, maxY + cdy], hCands);
+    return { dx: cdx + x.snap, dy: cdy + y.snap, guideX: x.guide, guideY: y.guide };
+  };
+
+  // Computed once per render so the preview, the guide lines and the commit all
+  // agree on the same snapped delta.
+  const dragSnap = dragState ? snapDrag(dragState) : null;
 
   const handleResizeStart = (
     event: React.PointerEvent<HTMLSpanElement>,
@@ -570,8 +615,8 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
         ? resizeLineBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height)
         : resizeBoxBBox(object.bbox, resizeState.dir, dx, dy, page.width, page.height);
     }
-    if (dragState && dragState.ids.includes(object.id)) {
-      const { dx, dy } = groupClampedDelta(dragState);
+    if (dragState && dragSnap && dragState.ids.includes(object.id)) {
+      const { dx, dy } = dragSnap;
       const origin = dragState.origins[object.id];
       return [origin[0] + dx, origin[1] + dy, origin[2] + dx, origin[3] + dy];
     }
@@ -850,6 +895,14 @@ export const PDFCanvas: React.FC<PDFCanvasProps> = ({
               height: Math.abs(marquee.current.y - marquee.start.y),
             }}
           />
+        )}
+
+        {/* Alignment guides shown while a drag is snapped. */}
+        {dragSnap?.guideX != null && (
+          <div className="snap-guide vertical" style={{ left: dragSnap.guideX * SCALE }} />
+        )}
+        {dragSnap?.guideY != null && (
+          <div className="snap-guide horizontal" style={{ top: dragSnap.guideY * SCALE }} />
         )}
 
         {isDrawing && startPoint && currentPoint && (

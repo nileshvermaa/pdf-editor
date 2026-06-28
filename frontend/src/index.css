@@ -748,6 +748,24 @@ button {
   z-index: 60;
 }
 
+/* Alignment guide lines shown while a drag snaps to an edge/center. */
+.snap-guide {
+  position: absolute;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 65;
+}
+.snap-guide.vertical {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.snap-guide.horizontal {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
 .scanned-img-highlight {
   position: absolute;
   border: 1.5px dashed var(--accent);
