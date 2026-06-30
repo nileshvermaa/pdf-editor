@@ -116,11 +116,14 @@ def resolve_pdf_font(font_name: str, flags: int = 0) -> str:
     is_serif = bool(flags & _FLAG_SERIF) or any(k in fn for k in ("times", "serif", "roman", "georgia", "garamond"))
     is_mono = bool(flags & _FLAG_MONO) or any(k in fn for k in ("courier", "mono", "consol", "code"))
 
+    # NB: these are PyMuPDF's Base-14 short codes. Times-Roman is "tiro" (not
+    # "times") and Helvetica-Oblique is "heit" (not "heio") — the wrong codes
+    # raise "need font file or buffer" at insert time.
     if is_mono:
         return {(0, 0): "cour", (1, 0): "cobo", (0, 1): "coit", (1, 1): "cobi"}[(int(is_bold), int(is_italic))]
     if is_serif:
-        return {(0, 0): "times", (1, 0): "tibo", (0, 1): "tiit", (1, 1): "tibi"}[(int(is_bold), int(is_italic))]
-    return {(0, 0): "helv", (1, 0): "hebo", (0, 1): "heio", (1, 1): "hebi"}[(int(is_bold), int(is_italic))]
+        return {(0, 0): "tiro", (1, 0): "tibo", (0, 1): "tiit", (1, 1): "tibi"}[(int(is_bold), int(is_italic))]
+    return {(0, 0): "helv", (1, 0): "hebo", (0, 1): "heit", (1, 1): "hebi"}[(int(is_bold), int(is_italic))]
 
 
 # --------------------------------------------------------------------------- #
@@ -624,82 +627,99 @@ def add_highlight(doc: "fitz.Document", page_number: int, bbox: List[float], col
     annot.update()
 
 
+def _flatten_one(page: "fitz.Page", obj: Dict[str, Any], asset_resolver: Callable[[str], str]) -> None:
+    """Draw a single overlay object onto an (already derotated) page."""
+    align_map = {"left": 0, "center": 1, "right": 2, "justify": 3}
+    bbox = obj["bbox"]
+    obj_type = obj["type"]
+
+    if obj_type == "shape":
+        draw_shape(
+            page.parent,
+            page.number + 1,
+            obj.get("shape_type", "rect"),
+            bbox,
+            obj.get("stroke_color", "#000000"),
+            obj.get("fill_color"),
+            float(obj.get("line_width", 2.0)),
+        )
+        return
+
+    rect = fitz.Rect(bbox)
+    if rect.width <= 0 or rect.height <= 0:
+        raise ValueError("Object bbox must have positive width and height")
+    if rect.x0 < page.rect.x0 or rect.y0 < page.rect.y0 or rect.x1 > page.rect.x1 or rect.y1 > page.rect.y1:
+        raise ValueError("Object bbox is outside page bounds")
+
+    if obj_type == "image":
+        # keep_proportion=False so the flattened image fills the frame the user
+        # sized on screen (the canvas renders it with object-fit: fill).
+        page.insert_image(rect, filename=asset_resolver(obj["asset_id"]), keep_proportion=False)
+        return
+
+    if obj_type in {"text", "signature"}:
+        fontname = "tiit" if obj_type == "signature" else resolve_pdf_font(obj.get("font_family", "Helvetica"))
+        page.insert_textbox(
+            rect,
+            obj.get("text", ""),
+            fontsize=float(obj.get("font_size", 12.0)),
+            fontname=fontname,
+            color=hex_to_rgb01(obj.get("color", "#000000")),
+            align=align_map.get(obj.get("align", "left"), 0),
+        )
+        return
+
+    if obj_type == "comment":
+        fill = hex_to_rgb01(obj.get("fill_color") or "#fff6bf")
+        stroke = hex_to_rgb01(obj.get("stroke_color") or "#d7b200")
+        shape = page.new_shape()
+        shape.draw_rect(rect)
+        shape.finish(color=stroke, fill=fill, width=max(1.0, float(obj.get("line_width", 1.0))))
+        shape.commit()
+        inset = fitz.Rect(rect.x0 + 6, rect.y0 + 6, rect.x1 - 6, rect.y1 - 6)
+        if inset.width > 0 and inset.height > 0:
+            page.insert_textbox(
+                inset,
+                obj.get("text", ""),
+                fontsize=float(obj.get("font_size", 11.0)),
+                fontname=resolve_pdf_font(obj.get("font_family", "Helvetica")),
+                color=hex_to_rgb01(obj.get("color", "#000000")),
+            )
+
+
 def flatten_objects(
     doc: "fitz.Document",
     objects: List[Dict[str, Any]],
     asset_resolver: Callable[[str], str],
-) -> None:
-    """Flatten overlay editor objects into the PDF in z-index order."""
-    align_map = {
-        "left": 0,
-        "center": 1,
-        "right": 2,
-        "justify": 3,
-    }
+) -> List[str]:
+    """Flatten overlay editor objects into the PDF in z-index order.
 
+    Returns non-fatal warnings. A single object that fails to draw is skipped
+    (and reported) rather than aborting the whole export. Object coordinates are
+    stored in the page's *unrotated* (mediabox) space, so a rotated page is
+    temporarily derotated for drawing, then its rotation is restored.
+    """
+    warnings: List[str] = []
     for obj in sorted(objects, key=lambda item: item.get("z_index", 0)):
         if obj.get("hidden"):
             continue
-
         page_number = int(obj["page_number"])
         if not 1 <= page_number <= doc.page_count:
-            raise IndexError("Page number out of bounds")
+            warnings.append(f"Skipped an object on missing page {page_number}.")
+            continue
         page = doc[page_number - 1]
-        bbox = obj["bbox"]
-        obj_type = obj["type"]
-
-        if obj_type == "shape":
-            draw_shape(
-                doc,
-                page_number,
-                obj.get("shape_type", "rect"),
-                bbox,
-                obj.get("stroke_color", "#000000"),
-                obj.get("fill_color"),
-                float(obj.get("line_width", 2.0)),
-            )
-            continue
-
-        rect = fitz.Rect(bbox)
-        if rect.width <= 0 or rect.height <= 0:
-            raise ValueError("Object bbox must have positive width and height")
-        if rect.x0 < page.rect.x0 or rect.y0 < page.rect.y0 or rect.x1 > page.rect.x1 or rect.y1 > page.rect.y1:
-            raise ValueError("Object bbox is outside page bounds")
-
-        if obj_type == "image":
-            # keep_proportion=False so the flattened image fills the frame the
-            # user sized on screen (the canvas renders it with object-fit: fill).
-            page.insert_image(rect, filename=asset_resolver(obj["asset_id"]), keep_proportion=False)
-            continue
-
-        if obj_type in {"text", "signature"}:
-            fontname = "tiit" if obj_type == "signature" else resolve_pdf_font(obj.get("font_family", "Helvetica"))
-            page.insert_textbox(
-                rect,
-                obj.get("text", ""),
-                fontsize=float(obj.get("font_size", 12.0)),
-                fontname=fontname,
-                color=hex_to_rgb01(obj.get("color", "#000000")),
-                align=align_map.get(obj.get("align", "left"), 0),
-            )
-            continue
-
-        if obj_type == "comment":
-            fill = hex_to_rgb01(obj.get("fill_color") or "#fff6bf")
-            stroke = hex_to_rgb01(obj.get("stroke_color") or "#d7b200")
-            shape = page.new_shape()
-            shape.draw_rect(rect)
-            shape.finish(color=stroke, fill=fill, width=max(1.0, float(obj.get("line_width", 1.0))))
-            shape.commit()
-            inset = fitz.Rect(rect.x0 + 6, rect.y0 + 6, rect.x1 - 6, rect.y1 - 6)
-            if inset.width > 0 and inset.height > 0:
-                page.insert_textbox(
-                    inset,
-                    obj.get("text", ""),
-                    fontsize=float(obj.get("font_size", 11.0)),
-                    fontname=resolve_pdf_font(obj.get("font_family", "Helvetica")),
-                    color=hex_to_rgb01(obj.get("color", "#000000")),
-                )
+        rotation = page.rotation
+        try:
+            if rotation:
+                page.set_rotation(0)  # draw in mediabox coords, restore after
+            _flatten_one(page, obj, asset_resolver)
+        except Exception as exc:
+            warnings.append(f"Skipped a {obj.get('type', 'object')}: {exc}")
+            log.warning("flatten: skipped object %s: %s", obj.get("id"), exc)
+        finally:
+            if rotation:
+                page.set_rotation(rotation)
+    return warnings
 
 
 def insert_ocr_blocks(

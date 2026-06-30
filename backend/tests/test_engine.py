@@ -35,8 +35,33 @@ def _open(data: bytes) -> "fitz.Document":
 def test_font_flags_take_priority():
     # Bold flag set even though name has no "bold".
     assert engine.resolve_pdf_font("CustomSans", flags=1 << 4) == "hebo"
-    assert engine.resolve_pdf_font("Times New Roman") == "times"
+    assert engine.resolve_pdf_font("Times New Roman") == "tiro"
+    assert engine.resolve_pdf_font("Helvetica-Oblique") == "heit"
     assert engine.resolve_pdf_font("Courier", flags=(1 << 4) | (1 << 1)) == "cobi"
+
+
+def test_resolved_fonts_are_all_insertable():
+    """Every Base-14 code resolve_pdf_font can emit must be usable by insert_text.
+
+    Guards against invalid short codes (e.g. 'times'/'heio') that only blow up
+    when a serif/oblique source PDF is edited.
+    """
+    names = [
+        "Times-Roman", "Times New Roman", "Georgia",          # serif family
+        "Helvetica", "Arial", "Helvetica-Oblique",            # sans family
+        "Courier New", "Consolas",                            # mono family
+    ]
+    flag_combos = [0, 1 << 1, 1 << 4, (1 << 1) | (1 << 4)]    # plain/italic/bold/bolditalic
+    doc = fitz.open()
+    try:
+        for name in names:
+            for flags in flag_combos:
+                code = engine.resolve_pdf_font(name, flags)
+                page = doc.new_page(width=200, height=80)
+                # Must not raise "need font file or buffer".
+                page.insert_text((20, 40), "Aa", fontname=code, fontsize=12)
+    finally:
+        doc.close()
 
 
 def test_hex_roundtrip():
@@ -355,6 +380,42 @@ def test_draw_shape_directional_line_rejected_when_outside_page():
     # start point is beyond the right edge; normalised bounds check must catch it
     with pytest.raises(ValueError):
         engine.draw_shape(doc, 1, "line", [350, 50, 100, 50], "#000000", None, 2.0)
+    doc.close()
+
+
+def test_flatten_skips_bad_object_without_crashing():
+    doc = fitz.open()
+    doc.new_page(width=300, height=300)
+    warnings = engine.flatten_objects(
+        doc,
+        [
+            {"id": "ok", "page_number": 1, "type": "text", "bbox": [20, 20, 200, 60],
+             "text": "Good", "font_family": "Inter", "font_size": 12, "color": "#000000", "align": "left", "z_index": 0},
+            {"id": "bad", "page_number": 1, "type": "text", "bbox": [9000, 9000, 9100, 9100],
+             "text": "Off page", "font_family": "Inter", "font_size": 12, "color": "#000000", "align": "left", "z_index": 1},
+        ],
+        lambda _: "",
+    )
+    assert "Good" in doc[0].get_text()      # the valid object still drew
+    assert len(warnings) == 1               # the off-page one was skipped, not fatal
+    doc.close()
+
+
+def test_flatten_on_rotated_page_uses_mediabox_coords():
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=600)
+    page.set_rotation(90)  # rect would become 600x400
+    warnings = engine.flatten_objects(
+        doc,
+        [{"id": "t", "page_number": 1, "type": "text", "bbox": [20, 20, 380, 560],
+          "text": "Tall", "font_family": "Inter", "font_size": 12, "color": "#000000", "align": "left", "z_index": 0}],
+        lambda _: "",
+    )
+    # bbox fits the unrotated 400x600 mediabox, so it must draw (no skip) and the
+    # page keeps its rotation.
+    assert warnings == []
+    assert "Tall" in doc[0].get_text()
+    assert doc[0].rotation == 90
     doc.close()
 
 
